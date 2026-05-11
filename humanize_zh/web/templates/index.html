@@ -1,0 +1,412 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold mb-1">humanize-zh</h1>
+  <p class="text-sm text-slate-600 mb-3">
+    把 AI 写的中文文章改成"像人写的". 给自己写公众号 / 小红书 / 知乎用.
+  </p>
+
+  <!-- 30 秒上手 -->
+  <div class="rounded-lg border-2 border-blue-200 bg-blue-50 px-4 py-3 text-sm">
+    <div class="font-semibold text-blue-900 mb-2">30 秒上手</div>
+    <ol class="list-decimal list-inside text-slate-700 space-y-1">
+      <li>把 AI 写的草稿粘到下面文本框</li>
+      <li>点 <span class="px-1.5 py-0.5 rounded bg-blue-600 text-white font-mono text-xs">🚀 一键去 AI</span> 蓝色按钮</li>
+      <li>等 30-90 秒, 右侧出现改写后的文章 → 复制走</li>
+    </ol>
+    <div class="text-xs text-slate-500 mt-2 leading-relaxed">
+      想拿改写后文章去
+      <a href="https://matrix.tencent.com/ai-detect/" target="_blank" class="text-blue-700 hover:underline">朱雀检测</a>
+      复测? 复制后直接打开朱雀粘进去看分.
+      仍报高分? 点下面 <strong>高级</strong> 展开 → 用闭环改写 (3 轮 LLM, 更强).
+    </div>
+  </div>
+</div>
+
+<!-- Provider status banner (compact) -->
+<div class="mb-6 rounded-lg border border-slate-200 bg-white p-3 text-xs flex items-center justify-between">
+  <div>
+    <span class="text-slate-500">LLM:</span>
+    {% if providers.active_will_be %}
+      <span class="text-emerald-600 font-mono ml-1">{{ providers.active_will_be }}</span>
+      <span class="text-slate-400 ml-1">(从 .env 自动加载)</span>
+    {% else %}
+      <span class="text-amber-600 ml-1">未配置</span>
+      <span class="text-slate-400 ml-1">— 在仓库根目录 .env 加 DEEPSEEK_API_KEY 或 ANTHROPIC_API_KEY</span>
+    {% endif %}
+  </div>
+  <details class="text-xs text-slate-400 cursor-pointer">
+    <summary class="hover:text-slate-700">所有 provider</summary>
+    <table class="mt-2 text-xs font-mono">
+      <thead><tr><th class="pr-4 text-left">provider</th><th class="pr-4 text-left">env</th><th class="text-left">状态</th></tr></thead>
+      <tbody>
+        {% for row in providers.rows %}
+        <tr>
+          <td class="pr-4">{{ row.name }}</td>
+          <td class="pr-4">{{ row.env }}</td>
+          <td>{% if row.available %}<span class="text-emerald-600">✓</span>{% else %}<span class="text-slate-300">·</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</div>
+
+<!-- Tabs: default = oneshot only; advanced tabs hidden until toggled -->
+<div class="flex gap-1 mb-4 flex-wrap items-center" role="tablist">
+  <button class="tab-active px-4 py-2 rounded-t-lg text-sm font-medium" data-tab="oneshot" onclick="showTab('oneshot')">🚀 一键去 AI</button>
+  <button id="advanced-toggle" type="button"
+          class="ml-auto text-xs text-slate-500 hover:text-slate-900 cursor-pointer"
+          onclick="toggleAdvanced()">
+    <span id="advanced-toggle-label">高级 ▼</span>
+  </button>
+</div>
+<div id="advanced-tabs" class="hidden flex gap-1 mb-4 flex-wrap" role="tablist">
+  <button class="tab-inactive px-4 py-2 rounded-t-lg text-sm font-medium" data-tab="loop" onclick="showTab('loop')">🔁 闭环改写 (3 轮 LLM)</button>
+  <button class="tab-inactive px-4 py-2 rounded-t-lg text-sm font-medium" data-tab="detect" onclick="showTab('detect')">🔍 仅检测分数</button>
+  <button class="tab-inactive px-4 py-2 rounded-t-lg text-sm font-medium" data-tab="polish" onclick="showTab('polish')">✨ 仅润色 (单轮)</button>
+  <button class="tab-inactive px-4 py-2 rounded-t-lg text-sm font-medium" data-tab="judge"  onclick="showTab('judge')">⚖️ LLM 终审</button>
+</div>
+<script>
+  function toggleAdvanced() {
+    var el = document.getElementById('advanced-tabs');
+    var lbl = document.getElementById('advanced-toggle-label');
+    if (el.classList.contains('hidden')) {
+      el.classList.remove('hidden');
+      el.classList.add('flex');
+      lbl.textContent = '收起 ▲';
+    } else {
+      el.classList.add('hidden');
+      el.classList.remove('flex');
+      lbl.textContent = '高级 ▼';
+    }
+  }
+</script>
+
+<div class="bg-white border border-slate-200 rounded-lg rounded-tl-none p-6">
+
+  <!-- ───────── One-shot ───────── -->
+  <section data-pane="oneshot">
+    <p class="text-sm text-slate-600 mb-3">粘贴文章, 后端自动跑完整去 AI 流程: 检测 → LLM 润色 → 再次检测, 一次提交看到完整对比。</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <form hx-post="/htmx/oneshot"
+            hx-target="#oneshot-result"
+            hx-swap="innerHTML"
+            hx-indicator="#oneshot-loading"
+            hx-on::before-request="document.getElementById('oneshot-result').innerHTML=''; document.getElementById('oneshot-empty').style.display='none'"
+            class="space-y-4">
+        <textarea name="text" rows="18" required data-shared
+                  class="w-full font-mono text-sm border border-slate-300 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  placeholder="粘贴中文文章..."></textarea>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <label class="block">
+            <span class="text-slate-700">scene</span>
+            <select name="scene" class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+              <option value="analysis" selected>analysis</option>
+              <option value="essay">essay</option>
+              <option value="academic">academic</option>
+              <option value="blog">blog</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-slate-700">lang</span>
+            <select name="lang" class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+              <option value="zh" selected>zh (中文)</option>
+              <option value="en">en (英文 LLM-only)</option>
+            </select>
+          </label>
+        </div>
+        <label class="text-sm text-slate-700 flex items-start gap-2">
+          <input type="checkbox" name="force_llm" value="true" class="mt-1 rounded border-slate-300">
+          <span>
+            <strong>强制调 LLM</strong>
+            <span class="text-xs text-slate-500 block">默认: 原文 AI 分若已低于阈值则跳过 LLM (省钱). 勾选则不论分高低都送给 LLM 改写.</span>
+          </span>
+        </label>
+        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-3 rounded-md">
+          🚀 一键去 AI(自动检测 + 润色)
+        </button>
+        <p class="text-xs text-slate-500">提交后请等待 30-90 秒, 后端会调 LLM 改写。结果出现在右侧。</p>
+      </form>
+      <div>
+        <div id="oneshot-loading" class="htmx-indicator">{% include "_loading_skel.html" with context %}</div>
+        <div id="oneshot-result"></div>
+        <div id="oneshot-empty" class="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+          点左侧按钮后, 结果会显示在这里
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── Iterative closed-loop ───────── -->
+  <section data-pane="loop" class="hidden">
+    <p class="text-sm text-slate-600 mb-3">
+      <strong>多轮闭环</strong>: writer LLM 改写 → judge LLM 评分 + 找 AI tells →
+      下一轮 writer 针对 tells 再改, 直到 judge 给分 ≤ 目标. 每轮 2 次 LLM 调用,
+      默认 3 轮 = 6 次 LLM. 用于第三方检测器 (朱雀/Originality) 仍报高分时.
+    </p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <form hx-post="/htmx/oneshot-loop"
+            hx-target="#loop-result"
+            hx-swap="innerHTML"
+            hx-indicator="#loop-loading"
+            hx-on::before-request="document.getElementById('loop-result').innerHTML=''; var e=document.getElementById('loop-empty'); if(e) e.style.display='none'"
+            class="space-y-4">
+        <textarea name="text" rows="18" required data-shared
+                  class="w-full font-mono text-sm border border-slate-300 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  placeholder="粘贴需要彻底去 AI 的中文文章..."></textarea>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <label class="block">
+            <span class="text-slate-700">scene</span>
+            <select name="scene" class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+              <option value="analysis" selected>analysis</option>
+              <option value="essay">essay</option>
+              <option value="academic">academic</option>
+              <option value="blog">blog</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-slate-700">lang</span>
+            <select name="lang" class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+              <option value="zh" selected>zh</option>
+              <option value="en">en</option>
+            </select>
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <label class="block">
+            <span class="text-slate-700">轮数 <span class="text-xs text-slate-500">(1-5)</span></span>
+            <input type="number" name="rounds" value="3" min="1" max="5"
+                   class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+          </label>
+          <label class="block">
+            <span class="text-slate-700">目标 AI 分 <span class="text-xs text-slate-500">(≤ 即停)</span></span>
+            <input type="number" name="target_ai_score" value="30" min="0" max="100"
+                   class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <label class="block">
+            <span class="text-slate-700">writer provider <span class="text-xs text-slate-500">(留空=默认)</span></span>
+            <input type="text" name="writer" placeholder="如 deepseek"
+                   class="mt-1 block w-full border border-slate-300 rounded-md p-2 font-mono">
+          </label>
+          <label class="block">
+            <span class="text-slate-700">judge provider <span class="text-xs text-slate-500">(留空=默认)</span></span>
+            <input type="text" name="judge" placeholder="如 hunyuan / qwen"
+                   class="mt-1 block w-full border border-slate-300 rounded-md p-2 font-mono">
+          </label>
+        </div>
+        <label class="text-sm text-slate-700 flex items-start gap-2">
+          <input type="checkbox" name="allow_self_judge" value="true" class="mt-1 rounded border-slate-300">
+          <span>
+            <strong>允许 writer = judge (自审)</strong>
+            <span class="text-xs text-slate-500 block">
+              如果只有 1 个 provider, 必须勾选 (judge 评分会有共谋风险, UI 会标 ⚠️).
+              建议接入第二家 (env 里加 <code>HUNYUAN_API_KEY</code> 等) 后留空 judge 字段, autodetect 会用最先可用的.
+            </span>
+          </span>
+        </label>
+        <button type="submit" class="w-full bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-4 py-3 rounded-md">
+          🔁 启动闭环改写 (3 轮 ≈ 90-180s)
+        </button>
+        <p class="text-xs text-slate-500">
+          运行时间 ≈ 轮数 × 30-60s. 中途别关页面, judge tells 会驱动下一轮 polish 越改越准.
+        </p>
+      </form>
+      <div>
+        <div id="loop-loading" class="htmx-indicator">{% include "_loading_skel.html" with context %}</div>
+        <div id="loop-result"></div>
+        <div id="loop-empty" class="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+          多轮过程 + 最终改写文章会显示在这里
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── Detect ───────── -->
+  <section data-pane="detect" class="hidden">
+    <p class="text-sm text-slate-600 mb-3">纯 Python 评分, 不调 LLM, &lt;100ms。给出 rule / ngram / combined 三个分数 + 命中规则清单。</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <form hx-post="/htmx/detect"
+            hx-target="#detect-result"
+            hx-swap="innerHTML"
+            hx-indicator="#detect-loading"
+            hx-on::before-request="document.getElementById('detect-result').innerHTML=''; var e=document.getElementById('detect-empty'); if(e) e.style.display='none'"
+            class="space-y-4">
+        <textarea name="text" rows="18" required data-shared
+                  class="w-full font-mono text-sm border border-slate-300 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-slate-700"
+                  placeholder="粘贴中文文章..."></textarea>
+        <label class="text-sm text-slate-700 flex items-center gap-2">
+          <input type="checkbox" name="has_notes" value="true" class="rounded border-slate-300">
+          <span>has_notes (有真实操作记录, 放宽伪人味检查)</span>
+        </label>
+        <button type="submit" class="w-full bg-slate-900 hover:bg-slate-700 text-white text-sm font-medium px-4 py-2 rounded-md">
+          运行检测
+        </button>
+      </form>
+      <div>
+        <div id="detect-loading" class="htmx-indicator text-sm text-slate-500 py-4">running...</div>
+        <div id="detect-result"></div>
+        <div id="detect-empty" class="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+          检测分数 + 命中规则会显示在这里
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── Polish ───────── -->
+  <section data-pane="polish" class="hidden">
+    <p class="text-sm text-slate-600 mb-3">调 LLM 按 24 条 AI 模式改写文章。30-90s。结果显示在右侧, 可复制 / 流转到下一步。</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <form hx-post="/htmx/polish"
+            hx-target="#polish-result"
+            hx-swap="innerHTML"
+            hx-indicator="#polish-loading"
+            hx-on::before-request="document.getElementById('polish-result').innerHTML=''; var e=document.getElementById('polish-empty'); if(e) e.style.display='none'"
+            class="space-y-4">
+        <textarea name="text" rows="18" required data-shared
+                  class="w-full font-mono text-sm border border-slate-300 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-slate-700"
+                  placeholder="粘贴需要润色的文章..."></textarea>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <label class="block">
+            <span class="text-slate-700">scene</span>
+            <select name="scene" class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+              <option value="analysis" selected>analysis</option>
+              <option value="essay">essay</option>
+              <option value="academic">academic</option>
+              <option value="blog">blog</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-slate-700">lang</span>
+            <select name="lang" class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+              <option value="zh" selected>zh (中文完整 pipeline)</option>
+              <option value="en">en (LLM-only 英文模式)</option>
+            </select>
+          </label>
+        </div>
+        <label class="text-sm text-slate-700 flex items-start gap-2">
+          <input type="checkbox" name="force_llm" value="true" class="mt-1 rounded border-slate-300">
+          <span><strong>强制调 LLM</strong> <span class="text-xs text-slate-500">— 即使原文已达发布线也调用 LLM 改写</span></span>
+        </label>
+        <button type="submit" class="w-full bg-slate-900 hover:bg-slate-700 text-white text-sm font-medium px-4 py-2 rounded-md">
+          调 LLM 润色
+        </button>
+        <p class="text-xs text-slate-500">提交后等 30-90 秒。结果显示在右侧。</p>
+      </form>
+      <div>
+        <div id="polish-loading" class="htmx-indicator">{% include "_loading_skel.html" with context %}</div>
+        <div id="polish-result"></div>
+        <div id="polish-empty" class="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+          润色后的文章会显示在这里
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── Judge ───────── -->
+  <section data-pane="judge" class="hidden">
+    <p class="text-sm text-slate-600 mb-3">调一个独立 LLM 当编辑给出 7 字段审稿 JSON。建议 writer/judge 用不同 provider 防共谋。30-60s。</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <form hx-post="/htmx/judge"
+            hx-target="#judge-result"
+            hx-swap="innerHTML"
+            hx-indicator="#judge-loading"
+            hx-on::before-request="document.getElementById('judge-result').innerHTML=''; var e=document.getElementById('judge-empty'); if(e) e.style.display='none'"
+            class="space-y-4">
+        <textarea name="text" rows="18" required data-shared
+                  class="w-full font-mono text-sm border border-slate-300 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-slate-700"
+                  placeholder="粘贴需要终审的文章..."></textarea>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <label class="block">
+            <span class="text-slate-700">lang</span>
+            <select name="lang" class="mt-1 block w-full border border-slate-300 rounded-md p-2">
+              <option value="zh" selected>zh</option>
+              <option value="en">en</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-slate-700">writer (collusion 检测)</span>
+            <input type="text" name="writer" placeholder="可选, 如 deepseek"
+                   class="mt-1 block w-full border border-slate-300 rounded-md p-2"/>
+          </label>
+          <label class="block col-span-2">
+            <span class="text-slate-700">judge provider (不传则用 active)</span>
+            <input type="text" name="judge" placeholder="可选, 如 anthropic"
+                   class="mt-1 block w-full border border-slate-300 rounded-md p-2"/>
+          </label>
+          <label class="block col-span-2 flex items-center gap-2">
+            <input type="checkbox" name="allow_self_judge" value="true" class="rounded border-slate-300">
+            <span class="text-sm text-slate-700">allow self-judge (writer == judge, 不推荐)</span>
+          </label>
+        </div>
+        <button type="submit" class="w-full bg-slate-900 hover:bg-slate-700 text-white text-sm font-medium px-4 py-2 rounded-md">
+          调 LLM 终审
+        </button>
+      </form>
+      <div>
+        <div id="judge-loading" class="htmx-indicator">{% include "_loading_skel.html" with context %}</div>
+        <div id="judge-result"></div>
+        <div id="judge-empty" class="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+          审稿报告会显示在这里
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  // Tab switching with shared text propagation between panes
+  function showTab(name) {
+    // Sync the textarea text across panes (so user can flip tabs without losing input)
+    const panes = document.querySelectorAll('[data-pane]');
+    const currentText = (() => {
+      for (const p of panes) {
+        if (!p.classList.contains('hidden')) {
+          const ta = p.querySelector('textarea[data-shared]');
+          if (ta && ta.value) return ta.value;
+        }
+      }
+      return null;
+    })();
+    panes.forEach(p => p.classList.toggle('hidden', p.dataset.pane !== name));
+    document.querySelectorAll('[data-tab]').forEach(el => {
+      const active = el.dataset.tab === name;
+      el.classList.toggle('tab-active',   active);
+      el.classList.toggle('tab-inactive', !active);
+    });
+    if (currentText) {
+      const target = document.querySelector(`[data-pane="${name}"] textarea[data-shared]`);
+      if (target && !target.value) target.value = currentText;
+    }
+  }
+
+  // 流转按钮: 把 polished 文本 / 任意文本搬到目标 tab 的输入框并切换
+  function pipeTo(targetTab, text) {
+    showTab(targetTab);
+    const ta = document.querySelector(`[data-pane="${targetTab}"] textarea[data-shared]`);
+    if (ta) {
+      ta.value = text;
+      ta.focus();
+      ta.scrollIntoView({behavior: "smooth", block: "center"});
+    }
+  }
+
+  // 隐藏空状态占位 (HTMX 完成后)
+  document.body.addEventListener("htmx:afterSwap", (e) => {
+    const id = e.target.id;
+    const empty = document.getElementById(id.replace("-result", "-empty"));
+    if (empty && e.target.innerHTML.trim()) empty.style.display = "none";
+  });
+  document.body.addEventListener("htmx:beforeRequest", (e) => {
+    const targetId = e.detail.target ? e.detail.target.id : null;
+    if (targetId) {
+      const empty = document.getElementById(targetId.replace("-result", "-empty"));
+      if (empty) empty.style.display = "none";
+    }
+  });
+</script>
+{% endblock %}

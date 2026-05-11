@@ -220,6 +220,69 @@ def build_humanize_prompt(scene: str = "analysis", *, compact: bool = False) -> 
     return head + body + "\n"
 
 
+# ── 强力重写 prompt(force_llm=True 时使用)─────────────
+# 普通 POSTPROCESS_PROMPT 是"逐项修违规", 适合刚生成的文章做小幅清理.
+# 第三方 AI 检测器 (朱雀/Originality) 看的是统计/transformer 困惑度,
+# 不是关键词命中, 所以光替换"综上所述"远远不够 —— 必须**重写句式**.
+POSTPROCESS_PROMPT_AGGRESSIVE = """# 任务: AI 文本深度去味改写 (重写级别)
+
+输入是一篇已被 AI 检测器(朱雀 / Originality / GPTZero)识别为 **>50% AI 概率** 的中文文章.
+仅做关键词替换无效——必须**改写句式结构**, 让 transformer 困惑度上升.
+
+## 输入
+---
+{ARTICLE}
+---
+
+## 已知违规清单(仅供参考, 真正问题在句式)
+{VIOLATIONS}
+
+## 改写硬规则(每条都要做到, 不是建议)
+
+### 1. 句式打散 — 这是最重要的一条
+AI 习惯写**长复合句**(主谓宾 + 修饰从句 + "并 / 同时 / 此外"). 你必须:
+- 把长句拆成 1-2 个短句 + 1 个中句的节奏
+- 同一段内, 句子长度差至少 2 倍 (不能全是 30 字句, 也不能全是 10 字句)
+- 删除"并""同时""此外""值得一提的是""不仅...而且"这类拼接连词, 改用句号或转折
+
+### 2. 段落起手必须不一样
+连续 3 段的开头不能用相似结构. 至少混用 3 种:
+- 具体数字开头 ("8 个 subreddit 转发") - 反问 / 设问 ("这能算独立站吗?") - 转折 ("不过 ...")
+- 引语 / 直白断言 ("没人会读 1500 字的 about 页.")- 名词短语 + 句号 ("一个被低估的事实.") - 时间锚点 ("2024 年 3 月发的, 现在还在涨")
+
+### 3. 删 AI 套话(不是替换, 是**删掉整句**)
+看到下面任意句式, 整句删除, 让段落变短不补回:
+- "综上所述/总而言之/总之"开头的总结句- "值得一提的是/不容忽视/毋庸置疑/众所周知"
+- "在...的背景下/随着...的发展" - "为...提供了/带来了/注入了" + 抽象动词("活力""动能""赋能""生态")
+- "高质量发展/数字化转型/新质生产力"等政策套话
+
+### 4. 用具体替代抽象
+"取得了显著成效" → 删掉, 改成具体的数字 / 例子 / 时间- "广泛应用" → "已在 X 公司用了 6 个月" 之类的具体话- "推动行业变革" → 删整句
+
+### 5. 加人味标记(关键!)AI 写作没有"作者立场". 至少加 2 处:
+- 主观判断: "我觉得这套路不对" "说实话有点扯"
+- 不确定承认: "这个数没核实" "可能我看漏了"
+- 自嘲 / 元评论: "(说着说着又跑题了)" - 直接称呼读者: "你要是做独立开发就懂"
+
+### 6. 标点更新
+- 至少 1 处破折号 (—— 不是 -)
+- 至少 1 处分号或冒号
+- 长段中插入短句独占一行(夹注效果)
+
+## 输出格式
+
+直接输出**完整改写后文章**. 不要前言, 不要解释为什么这么改.
+
+## 必须保留(死线)
+- 所有 markdown 结构(标题/列表/表格)
+- 所有截图引用 `![alt](screenshots/xxx.png)`- 所有数字 / 百分比 / 金额 / 日期(`6.7M` `$30K` 这类反引号包裹的, 一字不改)
+- 末尾「参考来源」段, 链接一条不能少
+- 域名 / 用户名 / 产品名
+
+**改写句式而非删事实**. 长度控制在原文的 80%-120%, 允许稍短(因为删了套话).
+"""
+
+
 # ── 后处理 prompt(对已生成的文章润色)─────────────────
 POSTPROCESS_PROMPT = """# 任务: 去 AI 味润色 pass
 
@@ -260,17 +323,98 @@ POSTPROCESS_PROMPT = """# 任务: 去 AI 味润色 pass
 """
 
 
-def build_humanize_postprocess_prompt(article: str, violations: list, scene: str = "analysis") -> str:
-    """生成「对已有文章做去 AI 味润色」的 prompt"""
-    rules = build_humanize_prompt(scene=scene, compact=True)
+# ── 英文 LLM-only 模式 ────────────────────
+# 英文场景没有配套的 detect/ngram 引擎, 所以只给 LLM 一套英文润色 prompt,
+# 内嵌 5 大原则 (self-contained, 不依赖 HUMANIZE_RULES).
+POSTPROCESS_PROMPT_EN = """# Task: De-AI polishing pass
+
+You are a senior English editor trained to spot and strip AI-generated tell-signs.
+
+## Input
+
+Below is a long-form English article produced by an LLM. It may still carry AI
+writing tics such as filler openers, templated structure, metaphor overload,
+and sanitized neutrality.
+
+---
+{ARTICLE}
+---
+
+## Fix these categories (each is a retraction-level signal)
+
+1. **Filler openers & bureaucratic hedging** — remove "It's worth noting",
+   "In conclusion", "To put it simply", "At its core", "In today's world",
+   "One might argue", "Needless to say".
+2. **Template shapes** — no three-part enumerations ("First, Second, Finally"),
+   no mechanical "On one hand / On the other hand", no uniformly-sized paragraphs.
+3. **Rhythm** — mix sentence lengths. At least three distinct paragraph
+   openings (concrete number / rhetorical question / contrast / quote /
+   narrative / blunt claim). No brick-wall paragraphs.
+4. **Trust the reader** — state facts directly. Cut metaphors that translate
+   data into abstractions ("signal and noise", "the canvas", "a spectrum").
+5. **No fake human details** — remove fabricated scenes ("at 3am last Tuesday"),
+   invented first-person experience ("I spoke to a founder"), and made-up
+   quotes unless explicitly grounded in the source material.
+
+## Also watch for
+
+- Sanitized hedges stacked together ("perhaps", "might", "could be").
+- Collaborative chat residue ("Let me know if you need more!", "Hope this helps").
+- Empty uplift ("the future looks bright", "a promising frontier").
+- Universal claims dressed up as insight ("at the end of the day", "ultimately").
+
+## Output
+
+Return the **full polished article** only. No preface, no explanation.
+
+**Preserve exactly**:
+- All markdown structure (headings, lists, tables, fenced code)
+- All inline code and URLs
+- All numbers, percentages, currency, and dates (do not round or restate)
+- Named entities (domains, usernames, product names)
+- The final references / sources section, if any — every link must survive
+
+**Only rewrite**: phrasing, transitions, sentence shape, AI-flavored clichés.
+**Do not rewrite**: facts, numbers, section order, links.
+"""
+
+
+def build_humanize_postprocess_prompt(
+    article: str,
+    violations: list,
+    scene: str = "analysis",
+    *,
+    lang: str = "zh",
+    aggressive: bool = False,
+) -> str:
+    """生成「对已有文章做去 AI 味润色」的 prompt.
+
+    Args:
+        article: 待润色文章.
+        violations: detect.py 输出的违规列表; 英文模式忽略.
+        scene: 中文模式下的 scene (analysis/essay/academic/blog).
+        lang: "zh" (默认, 完整规则 + 违规清单) 或 "en" (LLM-only, 内嵌 5 原则).
+        aggressive: True 用强力重写 prompt (改写句式结构, 不只是替换关键词);
+                    用于第三方 AI 检测器仍报高分时. 仅 zh 模式生效.
+    """
+    if lang == "en":
+        return POSTPROCESS_PROMPT_EN.format(ARTICLE=article)
+
     if violations:
         viol_text = "\n".join(
             f"- {v.category}.{v.rule}: 命中 {v.count} 次 | 例: 「{v.sample[:40]}」"
             for v in violations[:30]
         )
     else:
-        viol_text = "(无具体违规, 但请按规则全篇润色)"
+        viol_text = "(规则扫描器未命中, 但第三方检测器仍报高分 - 问题在句式结构)"
 
+    if aggressive:
+        return POSTPROCESS_PROMPT_AGGRESSIVE.format(
+            ARTICLE=article,
+            VIOLATIONS=viol_text,
+        )
+
+    rules = build_humanize_prompt(scene=scene, compact=True)
     return POSTPROCESS_PROMPT.format(
         ARTICLE=article,
         VIOLATIONS=viol_text,

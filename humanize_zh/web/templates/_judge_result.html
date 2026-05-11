@@ -1,0 +1,39 @@
+{% if r.get('_error') %}
+  <div class="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
+    <strong>评审错误:</strong> {{ r['_error'] }}
+  </div>
+{% elif r.get('_parse_error') %}
+  <div class="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+    <strong>JSON 解析失败:</strong> {{ r['_parse_error'] }}
+    <pre class="text-out text-xs mt-2 font-mono">{{ r.get('_raw', '') }}</pre>
+  </div>
+{% else %}
+  <div class="space-y-4">
+    <div class="flex items-center gap-3 text-sm">
+      <span class="font-semibold text-base">
+        {% if r.publishable %}
+          <span class="text-emerald-700">✅ 可发表</span>
+        {% else %}
+          <span class="text-rose-700">❌ 需修改</span>
+        {% endif %}
+      </span>
+      {% if r.get('_meta') %}
+      <span class="text-xs text-slate-500">
+        judge: {{ r._meta.judge_provider }} ·
+        writer: {{ r._meta.writer_provider or 'n/a' }} ·
+        {{ "{:,}".format(r._meta.article_length) }} chars
+      </span>
+      {% endif %}
+    </div>
+
+    <div class="rounded-lg border border-slate-200 bg-white">
+      <div class="px-4 py-2 border-b border-slate-200 text-sm font-semibold">完整报告</div>
+      <pre class="text-out p-4 text-sm font-mono text-slate-800">{{ report }}</pre>
+    </div>
+
+    <details class="text-xs">
+      <summary class="cursor-pointer text-slate-500 hover:text-slate-800">原始 JSON</summary>
+      <pre class="text-out mt-2 p-3 bg-slate-50 border border-slate-200 rounded-md font-mono">{{ r | tojson(indent=2) }}</pre>
+    </details>
+  </div>
+{% endif %}

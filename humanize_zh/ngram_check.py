@@ -26,14 +26,62 @@
 
 from __future__ import annotations
 
+import importlib.util
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
-# 让内部 _ngram_engine.py 可以 import
+from ._format import level_label
+
+logger = logging.getLogger(__name__)
+
 DATA_DIR = Path(__file__).parent / "data"
-sys.path.insert(0, str(DATA_DIR))
+_ENGINE_PATH = DATA_DIR / "_ngram_engine.py"
+
+# Cached module handle so we only ``spec_from_file_location`` once.
+_ENGINE: ModuleType | None = None
+_ENGINE_LOAD_ERROR: str | None = None
+
+
+def _load_engine() -> ModuleType | None:
+    """Load the vendored scoring engine without polluting ``sys.path``.
+
+    ``data/_ngram_engine.py`` is a freestanding script that ships next to its
+    ``ngram_freq_cn.json`` calibration data. Earlier code shoved ``data/`` onto
+    ``sys.path``, which leaked across the entire process. We now use
+    :func:`importlib.util.spec_from_file_location` to import it under a private
+    name (``humanize_zh._ngram_engine``) — no path mutation, isolated module
+    namespace, and the error path is exposed via :data:`_ENGINE_LOAD_ERROR`
+    for callers that want to surface it.
+    """
+    global _ENGINE, _ENGINE_LOAD_ERROR
+    if _ENGINE is not None:
+        return _ENGINE
+    if _ENGINE_LOAD_ERROR is not None:
+        return None
+    if not _ENGINE_PATH.exists():
+        _ENGINE_LOAD_ERROR = f"engine file missing: {_ENGINE_PATH}"
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "humanize_zh._ngram_engine", _ENGINE_PATH,
+        )
+        if spec is None or spec.loader is None:
+            _ENGINE_LOAD_ERROR = "importlib could not build spec for engine"
+            return None
+        module = importlib.util.module_from_spec(spec)
+        # Cache in sys.modules so engine internals that re-import itself work.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    except Exception as e:  # pragma: no cover - defensive
+        _ENGINE_LOAD_ERROR = f"engine import failed: {e}"
+        logger.exception("[humanize_zh.ngram] engine load failed")
+        return None
+    _ENGINE = module
+    return module
 
 
 @dataclass
@@ -58,22 +106,12 @@ class NgramScore:
         return "\n".join(lines)
 
 
-def _level(prob: float) -> str:
-    if prob < 25:
-        return "LOW (基本像人写的)"
-    elif prob < 50:
-        return "MEDIUM (有些 AI 痕迹)"
-    elif prob < 75:
-        return "HIGH (大概率 AI 生成)"
-    return "VERY HIGH (几乎确定是 AI)"
-
-
 def _safe_call(fn, *args, default=None, **kwargs):
     """安全调用 _ngram_engine 的函数, 失败返回默认值"""
     try:
         return fn(*args, **kwargs)
     except Exception as e:
-        print(f"  [ngram] {fn.__name__} 失败: {e}", file=sys.stderr)
+        logger.warning("[humanize_zh.ngram] %s failed: %s", fn.__name__, e)
         return default
 
 
@@ -88,10 +126,12 @@ def ngram_score(text: str) -> NgramScore:
             text_length=0, char_count=0, available=True,
         )
 
-    try:
-        import _ngram_engine as eng  # type: ignore
-    except ImportError as e:
-        print(f"  [ngram] _ngram_engine.py 未找到: {e}", file=sys.stderr)
+    eng = _load_engine()
+    if eng is None:
+        logger.error(
+            "[humanize_zh.ngram] engine unavailable: %s",
+            _ENGINE_LOAD_ERROR or "unknown",
+        )
         return NgramScore(
             ai_probability=0.0, level="UNKNOWN", available=False,
             text_length=len(text),
@@ -99,7 +139,7 @@ def ngram_score(text: str) -> NgramScore:
 
     # 检查 ngram_freq_cn.json 是否在
     if not (DATA_DIR / "ngram_freq_cn.json").exists():
-        print(f"  [ngram] 缺失 {DATA_DIR}/ngram_freq_cn.json", file=sys.stderr)
+        logger.error("[humanize_zh.ngram] missing calibration: %s/ngram_freq_cn.json", DATA_DIR)
         return NgramScore(
             ai_probability=0.0, level="UNKNOWN", available=False,
             text_length=len(text),
@@ -231,7 +271,7 @@ def ngram_score(text: str) -> NgramScore:
 
     return NgramScore(
         ai_probability=round(ai_prob, 1),
-        level=_level(ai_prob),
+        level=level_label(ai_prob),
         metrics=metrics,
         text_length=len(text),
         char_count=char_count,

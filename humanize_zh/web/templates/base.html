@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}humanize-zh{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script>
+    // HTMX 2.x default drops 4xx/5xx responses; we want them swapped into target
+    // so users can see error details (e.g. 503 "no LLM provider configured").
+    document.addEventListener('htmx:configRequest', function(){});
+    document.addEventListener('htmx:beforeOnLoad', function(evt) {
+      var xhr = evt.detail.xhr;
+      if (xhr.status >= 400) {
+        evt.detail.shouldSwap = true;
+        evt.detail.isError = false;  // tell HTMX to swap anyway
+      }
+    });
+  </script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .htmx-indicator { display: none; }
+    .htmx-request .htmx-indicator { display: block; }
+    .htmx-request.htmx-indicator { display: block; }
+    .tab-active { background-color: rgb(15 23 42); color: white; }
+    .tab-inactive { background-color: rgb(241 245 249); color: rgb(51 65 85); }
+    pre.text-out { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen antialiased">
+  <header class="border-b border-slate-200 bg-white">
+    <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div>
+        <a href="/" class="text-lg font-bold tracking-tight">humanize-zh</a>
+        <span class="ml-2 text-xs text-slate-500">v{{ version }}</span>
+      </div>
+      <nav class="text-sm text-slate-600 flex items-center gap-4">
+        <a class="hover:text-slate-900" href="/" >Detect / Polish / Judge</a>
+        <a class="hover:text-slate-900" href="/api/providers" target="_blank">/api/providers</a>
+        <a class="hover:text-slate-900" href="/health" target="_blank">/health</a>
+        <a class="hover:text-slate-900" href="https://github.com/song/humanize-zh" target="_blank">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="max-w-5xl mx-auto px-6 py-6 text-center text-xs text-slate-500">
+    humanize-zh · MIT · Chinese AI text humanization
+  </footer>
+</body>
+</html>

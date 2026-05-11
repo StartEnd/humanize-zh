@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""humanize.judge — LLM 终审层
+"""humanize_zh.judge — LLM 终审层
 
-规则检测器(detect.py)便宜、快, 适合 CI; LLM 判官慢、贵, 适合终审。
-两者**不要混在一个总分里**, 各自输出, 由人或 pipeline 决定后续动作。
+规则检测器 (detect.py) 便宜、快, 适合 CI; LLM 判官慢、贵, 适合终审。
+两者 **不要混在一个总分里**, 各自输出, 由人或 pipeline 决定后续动作。
 
-判官输出严格的 JSON, 包含 7 个字段(由 codex 在 .agent-chat/dialogue.md Turn 003 设计):
+判官输出严格的 JSON, 包含 7 个字段 (codex 在 .agent-chat/dialogue.md Turn 003 设计):
 
     {
       "publishable": false,
@@ -14,39 +14,51 @@
       "unsupported_claims": [
         {"claim": "运营者是单兵", "missing_evidence": "没引用 sitemap 工整度"}
       ],
-      "template_smell": [
-        "整篇按 5W2H 分节, 每节长度近似一致, 像填空"
-      ],
-      "fake_human_details": [
-        "第七段「凌晨三点」是 AI 编造的, 数据里没有这个时间点"
-      ],
-      "best_theses": [
-        "Direct 52% 实际是付费引荐二次回访 - 这个判断有 3 条证据支撑"
-      ],
+      "template_smell": ["整篇按 5W2H 分节, 每节长度近似一致, 像填空"],
+      "fake_human_details": ["第七段「凌晨三点」是 AI 编造的, 数据里没有这个时间点"],
+      "best_theses": ["Direct 52% 实际是付费引荐二次回访 — 这个判断有 3 条证据支撑"],
       "rewrite_brief": "重点改第三段和第七段, 删去伪场景, 把「专家认为」改为具体出处"
     }
 
-防 LLM 共谋: 默认强制 judge_provider != writer_provider。
+防 LLM 共谋: 默认强制 judge_provider != writer_provider (按 name+model 比较).
 
 用法:
-    from humanize.judge import judge
-    result = judge(article_text, writer_provider="deepseek")
+    from humanize_zh import llm
+    from humanize_zh.judge import judge
+
+    llm.use_openai_compat(name="deepseek", ...)  # writer
+    writer = llm.get_active()
+
+    # 换个 provider 做 judge, 防共谋
+    llm.use("anthropic", api_key="sk-ant-...")
+    judge_provider = llm.get_active()
+
+    result = judge(article_text, writer_provider=writer, judge_provider=judge_provider)
     if not result["publishable"]:
         print(result["rewrite_brief"])
 
 CLI:
-    uv run python -m humanize.judge <file> [--writer deepseek] [--judge anthropic]
+    python -m humanize_zh.judge <file> [--lang zh|en] [--allow-self-judge]
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
-# 让 humanize 内可以反向 import scripts/generate.py 的 LLM 调用
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts"))
+from . import llm as _llm_module
+from .llm import (
+    LLMError,
+    LLMNotConfiguredError,
+    LLMProvider,
+    ProviderArg,
+    provider_id,
+    resolve_provider,
+)
+
+logger = logging.getLogger(__name__)
 
 
 JUDGE_PROMPT = """# 任务: 给一篇网站分析文章做终审编辑审稿
@@ -116,17 +128,87 @@ JUDGE_PROMPT = """# 任务: 给一篇网站分析文章做终审编辑审稿
 """
 
 
-def _call_llm(prompt: str, *, provider: str | None = None) -> str | None:
-    """调 LLM. 复用 scripts/generate.py 的 generate_article。"""
+# ── 英文 judge prompt (用于 lang="en" 英文文章终审) ─────────────────
+JUDGE_PROMPT_EN = """# Task: Final editorial review of a long-form English article
+
+You are an independent editor reviewing deep-analysis long-form articles.
+You do not rewrite the piece. You output a **structured JSON review only**.
+
+## Bar for publication
+
+Publishable = a reader will believe it, share it, and remember 1-2 concrete
+takeaways after closing the tab.
+
+Concrete criteria:
+1. **Falsifiable claims** — not universal truisms, but specific assertions
+   that a counter-example could refute.
+2. **Each claim has evidence chain** — every core assertion backed by ≥2
+   specific numbers or facts.
+3. **Structure driven by questions** — not template filling (intro / body /
+   conclusion / 5W2H shell).
+4. **No fabricated human flavor** — no invented scenes ("at 3am last Tuesday"),
+   no fake first-person experience ("a founder told me"), no made-up quotes.
+5. **Memorable takeaways** — reader can restate ≥1 counter-intuitive concrete
+   conclusion from memory.
+
+## Required JSON output (no markdown wrapper)
+
+```
+{{
+  "publishable": <bool>,
+  "worst_ai_sections": [
+    {{"para": "<first 30 chars of paragraph>", "reason": "<specific AI tell>"}}
+  ],
+  "unsupported_claims": [
+    {{"claim": "<claim from article>", "missing_evidence": "<what's missing>"}}
+  ],
+  "template_smell": ["<concrete templated structure, not vague>"],
+  "fake_human_details": ["<fabricated scene / experience quoted from article>"],
+  "best_theses": ["<strongest claim, quoted, why it works>"],
+  "rewrite_brief": "<3-5 sentences telling the author what to change, <200 chars>"
+}}
+```
+
+## Field notes
+
+- `publishable`: true only if all issues are minor AND ≥1 best_thesis.
+- `worst_ai_sections`: pick the worst 2-5 (not all paragraphs).
+- `unsupported_claims`: up to 5.
+- `template_smell`: give concrete examples, not vague "feels a bit template".
+- `fake_human_details`: quote exact fabricated passages.
+- `best_theses`: 1-3 strongest claims with reasoning.
+- `rewrite_brief`: 3-5 sentences, no fluff.
+
+## Forbidden
+
+- No text outside the JSON (no markdown fences, no explanation).
+- No emoji inside field values.
+- No platitudes ("good start", "needs work").
+- Do not duplicate things a regex detector already catches (bad phrases,
+  cliche sentences); focus on semantic issues.
+
+---
+
+## Article under review
+
+{ARTICLE}
+"""
+
+
+def _call_llm(prompt: str, *, provider: LLMProvider) -> str | None:
+    """Call the LLM with the judge prompt. Returns None on failure."""
     try:
-        from generate import generate_article  # type: ignore
-        return generate_article(prompt, provider=provider)
-    except Exception as e:
-        print(f"  [judge] LLM 调用失败: {e}", file=sys.stderr)
+        resp = provider.complete(prompt)
+    except LLMError as e:
+        logger.error("[humanize_zh.judge] LLM call failed (%s): %s", provider.name, e)
         return None
+    except Exception as e:
+        logger.exception("[humanize_zh.judge] unexpected LLM error (%s): %s", provider.name, e)
+        return None
+    return resp.text or None
 
 
-def _parse_json(raw: str) -> dict:
+def _parse_json(raw: str) -> dict[str, object]:
     """从 LLM 输出里抽 JSON 对象, 容错"""
     if not raw:
         return {}
@@ -149,62 +231,91 @@ def _parse_json(raw: str) -> dict:
             return {"_parse_error": "no json found", "_raw": raw[:500]}
 
     try:
-        return json.loads(s)
+        parsed = json.loads(s)
     except json.JSONDecodeError as e:
         return {"_parse_error": str(e), "_raw": raw[:500]}
+    if not isinstance(parsed, dict):
+        return {"_parse_error": "expected JSON object", "_raw": raw[:500]}
+    return parsed
 
 
 def judge(
     article: str,
     *,
-    writer_provider: str | None = None,
-    judge_provider: str | None = None,
+    lang: str = "zh",
+    writer_provider: ProviderArg = None,
+    judge_provider: ProviderArg = None,
     allow_self_judge: bool = False,
 ) -> dict:
-    """对一篇文章调 LLM 做终审。
+    """对一篇文章调 LLM 做终审.
 
     Args:
-        article: 待审文章(原始 markdown)
-        writer_provider: 写文章用的 provider(用于防共谋)
-        judge_provider: 评审 provider, 必须 != writer_provider 除非 allow_self_judge
-        allow_self_judge: 允许同一模型自审(不推荐)
+        article: 待审文章 (原始 markdown)
+        lang: "zh" (默认, 中文 judge prompt) 或 "en" (英文 judge prompt)
+        writer_provider: 写作用的 provider (用于防共谋, 仅作标识; 不实际调用).
+                         支持: LLMProvider 实例 | str | None
+        judge_provider:  评审 provider. 支持: LLMProvider 实例 | str | None
+                         None 时使用全局 active (并警告若与 writer_provider 同).
+        allow_self_judge: 允许同 provider+model 自审(不推荐, 共谋风险高).
 
     Returns:
         7 字段结构化 JSON dict, 失败时返回 {"_error": ...}
     """
-    if writer_provider and judge_provider and writer_provider == judge_provider:
-        if not allow_self_judge:
-            return {
-                "_error": (
-                    f"writer 和 judge 都是 {writer_provider}, LLM 共谋风险高。"
-                    "传 judge_provider 指定不同模型, 或设 allow_self_judge=True 强制运行。"
-                )
-            }
+    if lang not in ("zh", "en"):
+        return {"_error": f"lang must be 'zh' or 'en', got {lang!r}"}
 
-    # 默认: writer 是 deepseek 时, judge 用 anthropic; 反之亦然
-    if not judge_provider:
-        if writer_provider in ("deepseek", "glm", "qwen"):
-            judge_provider = "anthropic"
-        else:
-            judge_provider = "deepseek"
-        print(f"  [judge] 自动选择 judge provider: {judge_provider} (writer={writer_provider})")
+    # resolve writer (可选, 仅作标识)
+    writer_resolved: LLMProvider | None = None
+    if writer_provider is not None:
+        try:
+            writer_resolved = resolve_provider(writer_provider)
+        except (LLMNotConfiguredError, ValueError, TypeError) as e:
+            return {"_error": f"cannot resolve writer_provider: {e}"}
 
-    prompt = JUDGE_PROMPT.format(ARTICLE=article)
-    print(f"  [judge] 调 {judge_provider} 终审 (prompt {len(prompt):,} 字符)...")
+    # resolve judge (必需)
+    try:
+        judge_resolved = resolve_provider(judge_provider)
+    except LLMNotConfiguredError as e:
+        return {
+            "_error": (
+                "no judge provider configured; pass judge_provider= or call "
+                f"llm.autodetect() / llm.use(...) first ({e})"
+            )
+        }
+    except (ValueError, TypeError) as e:
+        return {"_error": f"cannot resolve judge_provider: {e}"}
 
-    raw = _call_llm(prompt, provider=judge_provider)
+    # collusion check: same (name, model) = same model talking to itself
+    writer_id = provider_id(writer_resolved)
+    judge_id = provider_id(judge_resolved)
+    if writer_id is not None and writer_id == judge_id and not allow_self_judge:
+        return {
+            "_error": (
+                f"writer and judge are both {judge_id}. Collusion risk is high. "
+                f"Pass a different judge_provider or set allow_self_judge=True to force."
+            )
+        }
+
+    template = JUDGE_PROMPT_EN if lang == "en" else JUDGE_PROMPT
+    prompt = template.format(ARTICLE=article)
+    logger.info(
+        "[humanize_zh.judge] calling %s (lang=%s, prompt %d chars)",
+        judge_resolved.name, lang, len(prompt),
+    )
+
+    raw = _call_llm(prompt, provider=judge_resolved)
     if not raw:
-        return {"_error": f"LLM ({judge_provider}) 调用失败"}
+        return {"_error": f"LLM ({judge_resolved.name}) call failed"}
 
     result = _parse_json(raw)
     if "_parse_error" in result:
-        print(f"  [judge] JSON 解析失败: {result['_parse_error']}", file=sys.stderr)
+        logger.warning("[humanize_zh.judge] JSON parse failed: %s", result["_parse_error"])
         return result
 
-    # 元信息
     result["_meta"] = {
-        "judge_provider": judge_provider,
-        "writer_provider": writer_provider,
+        "judge_provider": judge_id,
+        "writer_provider": writer_id,
+        "lang": lang,
         "article_length": len(article),
     }
     return result
@@ -269,19 +380,25 @@ def format_report(result: dict) -> str:
     return "\n".join(lines)
 
 
-def main():
+def main() -> None:
+    # 轻量 CLI, 完整 CLI 在 humanize_zh.cli (Phase 4).
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     if len(sys.argv) < 2:
-        print("用法: python -m humanize.judge <file> [--writer <provider>] [--judge <provider>] [--json] [--allow-self-judge]")
+        print(
+            "usage: python -m humanize_zh.judge <file> [--lang zh|en] "
+            "[--writer <provider>] [--judge <provider>] [--json] [--allow-self-judge]"
+        )
         print()
-        print("默认: writer 是 deepseek 时 judge 用 anthropic, 反之亦然")
-        print("强制同模型自审: 加 --allow-self-judge (不推荐, 共谋风险高)")
+        print("Provider names: openai | anthropic | deepseek | groq | openrouter | moonshot | glm | qwen | ollama")
+        print("Omit both --writer and --judge to use the active / autodetected provider for judging.")
         sys.exit(1)
 
     path = Path(sys.argv[1])
     if not path.exists():
-        print(f"错误: 文件不存在 {path}")
+        print(f"error: file not found: {path}")
         sys.exit(1)
 
+    lang = "zh"
     writer = None
     judge_p = None
     allow_self = "--allow-self-judge" in sys.argv
@@ -290,26 +407,48 @@ def main():
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--writer" and i + 1 < len(args):
-            writer = args[i + 1]; i += 2
+        if a == "--lang" and i + 1 < len(args):
+            lang = args[i + 1]
+            i += 2
+        elif a == "--writer" and i + 1 < len(args):
+            writer = args[i + 1]
+            i += 2
         elif a == "--judge" and i + 1 < len(args):
-            judge_p = args[i + 1]; i += 2
+            judge_p = args[i + 1]
+            i += 2
         else:
             i += 1
 
+    # autodetect if nothing is configured and user didn't pass one
+    if (
+        judge_p is None
+        and not _llm_module.has_active()
+        and _llm_module.autodetect() is None
+    ):
+        print(
+            "error: no LLM provider configured. Set one of "
+            "OPENAI_API_KEY / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / ..."
+        )
+        sys.exit(2)
+
     article = path.read_text(encoding="utf-8")
-    result = judge(article, writer_provider=writer, judge_provider=judge_p, allow_self_judge=allow_self)
+    result = judge(
+        article,
+        lang=lang,
+        writer_provider=writer,
+        judge_provider=judge_p,
+        allow_self_judge=allow_self,
+    )
 
     if out_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(format_report(result))
 
-    # 写出报告文件
     if not out_json:
         report_path = path.with_suffix(".judge.md")
         report_path.write_text(format_report(result), encoding="utf-8")
-        print(f"\n报告已保存: {report_path}")
+        print(f"\nreport saved: {report_path}")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .detect import score as rule_score, Score as RuleScore
+from ._format import level_label
+from .detect import Score as RuleScore
+from .detect import score as rule_score
 
 
 @dataclass
@@ -50,16 +52,6 @@ class CombinedScore:
         )
 
 
-def _level(prob: float) -> str:
-    if prob < 25:
-        return "LOW (基本像人写的)"
-    elif prob < 50:
-        return "MEDIUM (有些 AI 痕迹)"
-    elif prob < 75:
-        return "HIGH (大概率 AI 生成)"
-    return "VERY HIGH (几乎确定是 AI)"
-
-
 def combined_score(text: str, has_notes: bool = False) -> CombinedScore:
     """对文本同时跑规则检测 + ngram 统计检测, 综合两者输出。
 
@@ -76,8 +68,9 @@ def combined_score(text: str, has_notes: bool = False) -> CombinedScore:
     rs: RuleScore = rule_score(text, has_notes=has_notes)
 
     # Layer 2: ngram 检测
+    ngram_metrics: dict[str, Any]
     try:
-        from .ngram_check import ngram_score, NgramScore
+        from .ngram_check import NgramScore, ngram_score
         ns: NgramScore = ngram_score(text)
         ngram_prob = ns.ai_probability
         ngram_lvl = ns.level
@@ -92,14 +85,11 @@ def combined_score(text: str, has_notes: bool = False) -> CombinedScore:
         char_count = 0
 
     # 综合: max-style(任一层 HIGH 就报警)
-    if ngram_avail:
-        combined_prob = max(rs.total, ngram_prob)
-    else:
-        combined_prob = rs.total
+    combined_prob = max(rs.total, ngram_prob) if ngram_avail else rs.total
 
     return CombinedScore(
         combined_probability=round(combined_prob, 1),
-        combined_level=_level(combined_prob),
+        combined_level=level_label(combined_prob),
         rule_probability=round(rs.total, 1),
         rule_level=rs.level,
         ngram_probability=round(ngram_prob, 1),

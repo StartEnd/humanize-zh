@@ -1,0 +1,60 @@
+<div class="space-y-4">
+  {% if unchanged %}
+  <div class="rounded-lg border-2 border-amber-300 bg-amber-50 p-3">
+    <div class="text-sm font-semibold text-amber-900">⚠️ 润色文 == 原文</div>
+    <div class="text-xs text-amber-800 mt-1">
+      {% if force_llm %}已勾选强制 LLM,但 best-of-N 选回了原文。{% else %}原文 AI 分已低于阈值,程序跳过了 LLM。勾选 <strong>"强制调 LLM"</strong> 重试。{% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {% if before is not none and after is not none %}
+    {% set delta = before.total - after.total %}
+    <div class="rounded-lg border-2 border-emerald-300 bg-emerald-50 p-4">
+      <div class="text-xs uppercase tracking-wide text-emerald-700 font-semibold">AI 概率变化</div>
+      <div class="flex items-baseline gap-3 mt-2">
+        <span class="text-3xl font-bold text-slate-700">{{ "%.1f" % before.total }}</span>
+        <span class="text-slate-400">→</span>
+        <span class="text-3xl font-bold {% if after.total < 25 %}text-emerald-700{% elif after.total < 50 %}text-amber-700{% else %}text-rose-700{% endif %}">
+          {{ "%.1f" % after.total }}
+        </span>
+        <span class="text-sm font-mono px-2 py-0.5 rounded {% if delta > 0 %}bg-emerald-200 text-emerald-900{% else %}bg-rose-200 text-rose-900{% endif %}">
+          {% if delta > 0 %}↓{% else %}↑{% endif %} {{ "%.1f" % (delta if delta > 0 else -delta) }}
+        </span>
+      </div>
+      <div class="text-xs text-slate-600 mt-2">
+        {{ before.level }} → <strong>{{ after.level }}</strong>
+        · {{ "{:,}".format(len_before) }} → {{ "{:,}".format(len_after) }} chars
+        · scene={{ scene }}, lang={{ lang }}
+      </div>
+    </div>
+  {% else %}
+    <div class="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+      完成 (lang=en, 中文评分跳过) · {{ "{:,}".format(len_before) }} → {{ "{:,}".format(len_after) }} chars
+    </div>
+  {% endif %}
+
+  <div class="rounded-lg border border-slate-200 bg-white">
+    <div class="px-4 py-2 border-b border-slate-200 text-sm font-semibold flex items-center justify-between">
+      <span>润色后文章</span>
+      <button type="button"
+              class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
+              onclick="navigator.clipboard.writeText(document.getElementById('polished-text').innerText); this.innerText='已复制 ✓'">
+        复制
+      </button>
+    </div>
+    <pre id="polished-text" class="text-out p-4 text-sm font-mono">{{ polished }}</pre>
+  </div>
+
+  <div class="flex flex-wrap gap-2 text-xs">
+    <button type="button"
+            class="px-3 py-2 rounded bg-slate-900 hover:bg-slate-700 text-white"
+            onclick="pipeTo('detect', document.getElementById('polished-text').innerText)">
+      🔍 拿润色后文本去 detect 看分数
+    </button>
+    <button type="button"
+            class="px-3 py-2 rounded bg-slate-900 hover:bg-slate-700 text-white"
+            onclick="pipeTo('judge', document.getElementById('polished-text').innerText)">
+      ⚖️ 拿去 judge 终审
+    </button>
+  </div>
+</div>

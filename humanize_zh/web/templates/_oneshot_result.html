@@ -1,0 +1,91 @@
+{% set delta_v = (before.total - after.total) if (before is not none and after is not none) else 0 %}
+<div class="space-y-4">
+  {% if unchanged %}
+  <div class="rounded-lg border-2 border-amber-300 bg-amber-50 p-4">
+    <div class="text-sm font-semibold text-amber-900 mb-1">⚠️ 润色后的文章和原文一致</div>
+    <div class="text-xs text-amber-800 leading-relaxed space-y-1">
+      {% if force_llm %}
+        <p>已经勾选"强制 LLM",但 best-of-N 选回了原文(说明 LLM 改写后 combined 分反而升了)。可以试试:</p>
+      {% else %}
+        <p>原文 AI 分较低 (rule &lt; 25 且 combined &lt; 30),程序认为"已达发布线",直接跳过 LLM 调用。如果你想强制改写,请:</p>
+      {% endif %}
+      <ol class="list-decimal list-inside space-y-0.5">
+        {% if not force_llm %}<li>勾选下方表单的 <strong>"强制调 LLM"</strong> 复选框,再次提交</li>{% endif %}
+        <li>换一篇 AI 痕迹更明显的文章 (典型词:综上所述/赋能/不仅仅/值得一提)</li>
+        <li>检查左下方 detect 看具体命中规则数</li>
+      </ol>
+    </div>
+  </div>
+  {% endif %}
+  <!-- Score comparison header -->
+  {% if before is not none and after is not none %}
+  <div class="rounded-lg border-2 border-emerald-300 bg-emerald-50 p-4">
+    <div class="text-xs uppercase tracking-wide text-emerald-700 font-semibold">完成 — AI 概率变化</div>
+    <div class="flex items-baseline gap-3 mt-2">
+      <span class="text-3xl font-bold text-slate-700">{{ "%.1f" % before.total }}</span>
+      <span class="text-slate-400">→</span>
+      <span class="text-3xl font-bold {% if after.total < 25 %}text-emerald-700{% elif after.total < 50 %}text-amber-700{% else %}text-rose-700{% endif %}">
+        {{ "%.1f" % after.total }}
+      </span>
+      <span class="text-sm font-mono px-2 py-0.5 rounded {% if delta_v > 0 %}bg-emerald-200 text-emerald-900{% else %}bg-rose-200 text-rose-900{% endif %}">
+        {% if delta_v > 0 %}↓{% else %}↑{% endif %} {{ "%.1f" % (delta_v if delta_v > 0 else -delta_v) }}
+      </span>
+    </div>
+    <div class="text-xs text-slate-600 mt-2">
+      {{ before.level }} → <strong>{{ after.level }}</strong>
+      · {{ "{:,}".format(len_before) }} → {{ "{:,}".format(len_after) }} chars
+      · scene={{ scene }}, lang={{ lang }}
+    </div>
+  </div>
+  {% else %}
+  <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+    完成 (lang=en, 中文 rule/ngram 评分跳过)
+    · {{ "{:,}".format(len_before) }} → {{ "{:,}".format(len_after) }} chars
+  </div>
+  {% endif %}
+
+  <!-- Polished article -->
+  <div class="rounded-lg border border-slate-200 bg-white">
+    <div class="px-4 py-2 border-b border-slate-200 text-sm font-semibold flex items-center justify-between">
+      <span>润色后文章</span>
+      <div class="flex items-center gap-2">
+        <button type="button"
+                class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
+                onclick="navigator.clipboard.writeText(document.getElementById('oneshot-polished-text').innerText); this.innerText='已复制 ✓'">
+          复制
+        </button>
+        <button type="button"
+                class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
+                onclick="downloadText('polished.md', document.getElementById('oneshot-polished-text').innerText)">
+          下载 .md
+        </button>
+      </div>
+    </div>
+    <pre id="oneshot-polished-text" class="text-out p-4 text-sm font-mono">{{ polished }}</pre>
+  </div>
+
+  <!-- Pipe to next step -->
+  <div class="flex flex-wrap gap-2 text-xs">
+    <button type="button"
+            class="px-3 py-2 rounded bg-slate-900 hover:bg-slate-700 text-white"
+            onclick="pipeTo('detect', document.getElementById('oneshot-polished-text').innerText)">
+      🔍 拿润色后文本去 detect 看分数
+    </button>
+    <button type="button"
+            class="px-3 py-2 rounded bg-slate-900 hover:bg-slate-700 text-white"
+            onclick="pipeTo('judge', document.getElementById('oneshot-polished-text').innerText)">
+      ⚖️ 拿去 judge 终审
+    </button>
+  </div>
+</div>
+
+<script>
+  function downloadText(filename, content) {
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+</script>

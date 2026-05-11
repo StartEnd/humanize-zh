@@ -1,0 +1,47 @@
+{% macro level_color(level) -%}
+{%- if 'VERY HIGH' in level -%}bg-rose-100 text-rose-800
+{%- elif 'HIGH' in level -%}bg-orange-100 text-orange-800
+{%- elif 'MEDIUM' in level -%}bg-amber-100 text-amber-800
+{%- else -%}bg-emerald-100 text-emerald-800
+{%- endif -%}
+{%- endmacro %}
+
+<div class="space-y-4">
+  <div class="text-xs text-slate-500">{{ "{:,}".format(r.chars) }} 字符</div>
+
+  <div class="grid grid-cols-3 gap-4">
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">rule</div>
+      <div class="text-2xl font-bold mt-1">{{ "%.1f" % r.rule.probability }}<span class="text-sm text-slate-400">/100</span></div>
+      <div class="mt-1 inline-block px-2 py-0.5 rounded text-xs font-medium {{ level_color(r.rule.level) }}">{{ r.rule.level }}</div>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-white p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">ngram</div>
+      <div class="text-2xl font-bold mt-1">{{ "%.1f" % r.ngram.probability }}<span class="text-sm text-slate-400">/100</span></div>
+      <div class="mt-1 inline-block px-2 py-0.5 rounded text-xs font-medium {{ level_color(r.ngram.level) }}">{{ r.ngram.level }}</div>
+      {% if not r.ngram.available %}<div class="text-xs text-slate-400 mt-1">[资源未加载]</div>{% endif %}
+    </div>
+    <div class="rounded-lg border border-slate-300 bg-slate-50 p-4">
+      <div class="text-xs uppercase tracking-wide text-slate-500">combined</div>
+      <div class="text-2xl font-bold mt-1">{{ "%.1f" % r.combined.probability }}<span class="text-sm text-slate-400">/100</span></div>
+      <div class="mt-1 inline-block px-2 py-0.5 rounded text-xs font-medium {{ level_color(r.combined.level) }}">{{ r.combined.level }}</div>
+    </div>
+  </div>
+
+  {% if r.rule.violations %}
+  <div class="rounded-lg border border-slate-200 bg-white">
+    <div class="px-4 py-2 border-b border-slate-200 text-sm font-semibold">
+      规则命中 ({{ r.rule.violations|length }})
+    </div>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for v in r.rule.violations %}
+      <li class="px-4 py-2 flex items-baseline gap-3">
+        <span class="font-mono text-xs text-slate-500 shrink-0">{{ v.category }}.{{ v.rule }}</span>
+        <span class="text-slate-700 shrink-0">×{{ v.count }}</span>
+        <span class="text-slate-500 truncate">{{ v.sample }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>

@@ -24,7 +24,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean, pstdev
-from typing import Iterable
+
+from ._format import level_label
 
 PATTERNS_PATH = Path(__file__).parent / "patterns.json"
 
@@ -69,16 +70,6 @@ class Score:
             for k, v in self.stats.items():
                 lines.append(f"  {k}: {v}")
         return "\n".join(lines)
-
-
-def _level(score: float) -> str:
-    if score < 25:
-        return "LOW (基本像人写的)"
-    elif score < 50:
-        return "MEDIUM (有些 AI 痕迹)"
-    elif score < 75:
-        return "HIGH (大概率 AI 生成)"
-    return "VERY HIGH (几乎确定是 AI)"
 
 
 def _load_patterns() -> dict:
@@ -185,10 +176,12 @@ def _check_structural(text: str, rule: str, conf: dict) -> Violation | None:
     sample = ""
     if is_regex:
         m = re.search(pattern, text)
-        if m: sample = m.group(0)
+        if m:
+            sample = m.group(0)
     else:
         idx = text.find(pattern)
-        if idx >= 0: sample = text[max(0, idx - 5):idx + len(pattern) + 5]
+        if idx >= 0:
+            sample = text[max(0, idx - 5):idx + len(pattern) + 5]
     return Violation(
         category="structural_rules", rule=rule, weight=weight,
         count=count, sample=sample, threshold=threshold, score=score
@@ -312,21 +305,24 @@ def score(text: str, *, skip_codeblocks: bool = True, has_notes: bool = False) -
         if rule_name.startswith("_"):
             continue
         v = _check_word_list(plain, rule_name, conf)
-        if v: violations.append(v)
+        if v:
+            violations.append(v)
 
     # 2. 句式黑名单 (regex)
     for rule_name, conf in patterns.get("blacklist_phrases", {}).items():
         if rule_name.startswith("_"):
             continue
         v = _check_regex_list(plain, rule_name, conf)
-        if v: violations.append(v)
+        if v:
+            violations.append(v)
 
     # 3. 结构性硬约束
     for rule_name, conf in patterns.get("structural_rules", {}).items():
         if rule_name.startswith("_"):
             continue
         v = _check_structural(plain, rule_name, conf)
-        if v: violations.append(v)
+        if v:
+            violations.append(v)
 
     # 4. 节奏
     rhythm_violations, stats = _rhythm_score(plain, patterns)
@@ -338,7 +334,8 @@ def score(text: str, *, skip_codeblocks: bool = True, has_notes: bool = False) -
             if rule_name.startswith("_"):
                 continue
             v = _check_regex_list(plain, rule_name, conf, category="fake_human")
-            if v: violations.append(v)
+            if v:
+                violations.append(v)
     else:
         # 有 notes.md, 改为轻提醒(不扣分)
         stats["伪经验检测"] = "已豁免 (notes.md 存在)"
@@ -354,7 +351,7 @@ def score(text: str, *, skip_codeblocks: bool = True, has_notes: bool = False) -
 
     return Score(
         total=round(total, 1),
-        level=_level(total),
+        level=level_label(total),
         violations=violations,
         stats=stats,
         text_length=len(plain),

@@ -1,0 +1,154 @@
+{# Loop result fragment: writer ↔ judge over N rounds #}
+<div class="space-y-4">
+
+  {# Headline: AI score before/after #}
+  {% if first_round and last_round and first_round.ai_score is not none and last_round.ai_score is not none %}
+  <div class="rounded-lg border-2 border-emerald-300 bg-emerald-50 p-4">
+    <div class="text-xs uppercase tracking-wide text-emerald-700 font-semibold">
+      闭环改写完成 — Judge AI 概率变化
+    </div>
+    <div class="flex items-baseline gap-3 mt-2">
+      <span class="text-3xl font-bold text-slate-700">{{ first_round.ai_score }}</span>
+      <span class="text-slate-400">→</span>
+      <span class="text-3xl font-bold {% if last_round.ai_score < 30 %}text-emerald-700{% elif last_round.ai_score < 60 %}text-amber-700{% else %}text-rose-700{% endif %}">
+        {{ last_round.ai_score }}
+      </span>
+      {% if delta_ai is not none %}
+      <span class="text-sm font-mono px-2 py-0.5 rounded {% if delta_ai > 0 %}bg-emerald-200 text-emerald-900{% elif delta_ai < 0 %}bg-rose-200 text-rose-900{% else %}bg-slate-200 text-slate-700{% endif %}">
+        {% if delta_ai > 0 %}↓{% elif delta_ai < 0 %}↑{% else %}={% endif %}
+        {{ delta_ai if delta_ai >= 0 else -delta_ai }}
+      </span>
+      {% endif %}
+    </div>
+    <div class="text-xs text-slate-600 mt-2 space-y-0.5">
+      <div>
+        终轮 verdict: <strong>{{ last_round.verdict }}</strong>
+        · 共 {{ result.rounds|length }} 轮
+        · 停止: <code>{{ result.stopped_reason }}</code>
+        · {{ "{:,}".format(len_before) }} → {{ "{:,}".format(len_after) }} chars
+      </div>
+      <div>
+        writer: <code>{{ result.writer_provider or '?' }}</code>
+        · judge: <code>{{ result.judge_provider or '?' }}</code>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="rounded-lg border-2 border-rose-300 bg-rose-50 p-4 text-sm">
+    <div class="font-semibold text-rose-900">⚠️ Judge 未给出有效分数</div>
+    <div class="text-xs text-rose-700 mt-1">
+      可能原因: judge LLM JSON 输出格式错 / API 限流 / 网络. 看下方各轮详情排查.
+    </div>
+  </div>
+  {% endif %}
+
+  {# Self-judge collusion warning #}
+  {% if result.self_judge %}
+  <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+    ⚠️ Writer 和 Judge 是同一个 LLM (<code>{{ result.writer_provider }}</code>) ——
+    judge 评分有 <strong>共谋风险</strong>, 仅供参考. 建议接入第二个 provider 当 judge
+    (例如 Tencent Hunyuan / Aliyun DashScope), 设置不同 API key 后用 <code>judge=hunyuan</code>
+    传入即可.
+  </div>
+  {% endif %}
+
+  {# Rounds detail table #}
+  <div class="rounded-lg border border-slate-200 bg-white">
+    <div class="px-4 py-2 border-b border-slate-200 text-sm font-semibold flex items-center justify-between">
+      <span>各轮过程</span>
+      <span class="text-xs text-slate-500 font-normal">target ≤ {{ result.target_ai_score }}</span>
+    </div>
+    <table class="w-full text-xs">
+      <thead class="bg-slate-50 text-slate-600">
+        <tr>
+          <th class="px-3 py-2 text-left">#</th>
+          <th class="px-3 py-2 text-left">judge AI</th>
+          <th class="px-3 py-2 text-left">verdict</th>
+          <th class="px-3 py-2 text-left">rule</th>
+          <th class="px-3 py-2 text-left">chars</th>
+          <th class="px-3 py-2 text-left">tells (前 3 条)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in result.rounds %}
+        <tr class="border-t border-slate-100 align-top {% if r.error %}bg-rose-50{% elif loop.last %}bg-emerald-50{% endif %}">
+          <td class="px-3 py-2 font-mono">{{ r.round }}</td>
+          <td class="px-3 py-2 font-mono {% if r.ai_score is not none and r.ai_score <= result.target_ai_score %}text-emerald-700{% elif r.ai_score is none %}text-slate-400{% endif %}">
+            {{ r.ai_score if r.ai_score is not none else '—' }}
+          </td>
+          <td class="px-3 py-2">
+            <span class="inline-block px-1.5 py-0.5 rounded text-xs {% if r.verdict == 'HUMAN_LIKE' %}bg-emerald-100 text-emerald-800{% elif r.verdict == 'BORDERLINE' %}bg-amber-100 text-amber-800{% elif r.verdict == 'AI_LIKE' %}bg-rose-100 text-rose-800{% else %}bg-slate-100 text-slate-600{% endif %}">
+              {{ r.verdict }}
+            </span>
+          </td>
+          <td class="px-3 py-2 font-mono text-slate-600">
+            {{ "%.1f"|format(r.rule_score) if r.rule_score is not none else '—' }}
+          </td>
+          <td class="px-3 py-2 font-mono text-slate-600">{{ r.polished_len }}</td>
+          <td class="px-3 py-2 text-slate-600">
+            {% if r.error %}
+              <span class="text-rose-700">error: {{ r.error }}</span>
+            {% else %}
+              <ul class="space-y-0.5">
+                {% for t in r.tells[:3] %}
+                <li class="truncate" title="{{ t }}">· {{ t }}</li>
+                {% endfor %}
+                {% if r.tells|length > 3 %}
+                <li class="text-slate-400">+ {{ r.tells|length - 3 }} 条</li>
+                {% endif %}
+              </ul>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {# Final polished text #}
+  <div class="rounded-lg border border-slate-200 bg-white">
+    <div class="px-4 py-2 border-b border-slate-200 text-sm font-semibold flex items-center justify-between">
+      <span>最终改写后文章 (取最低分轮)</span>
+      <div class="flex items-center gap-2">
+        <button type="button"
+                class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
+                onclick="navigator.clipboard.writeText(document.getElementById('loop-final-text').innerText); this.innerText='已复制 ✓'">
+          复制
+        </button>
+        <button type="button"
+                class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
+                onclick="(function(){
+                  var blob = new Blob([document.getElementById('loop-final-text').innerText], {type:'text/markdown;charset=utf-8'});
+                  var a = document.createElement('a');
+                  a.href = URL.createObjectURL(blob);
+                  a.download = 'polished-loop.md';
+                  a.click();
+                  URL.revokeObjectURL(a.href);
+                })()">
+          下载 .md
+        </button>
+      </div>
+    </div>
+    <pre id="loop-final-text" class="text-out p-4 text-sm font-mono">{{ result.final_text }}</pre>
+  </div>
+
+  {# Pipe to next step #}
+  <div class="flex flex-wrap gap-2 text-xs">
+    <button type="button"
+            class="px-3 py-2 rounded bg-slate-900 hover:bg-slate-700 text-white"
+            onclick="pipeTo('detect', document.getElementById('loop-final-text').innerText)">
+      🔍 拿改写后文本去 detect 看分数
+    </button>
+    <button type="button"
+            class="px-3 py-2 rounded bg-slate-900 hover:bg-slate-700 text-white"
+            onclick="pipeTo('judge', document.getElementById('loop-final-text').innerText)">
+      ⚖️ 拿去 judge 终审
+    </button>
+  </div>
+
+  <div class="text-xs text-slate-500 italic leading-relaxed">
+    💡 提示: judge 用的是 LLM 自评 (transformer 困惑度估计), 跟朱雀 / Originality / GPTZero
+    同源信号但不完全等同. 拿改写后文章去朱雀复测才是真终审. 如果朱雀仍报高分,
+    把 99% AI 那一段单独贴进 polish tab 用 aggressive prompt 单独再跑.
+  </div>
+</div>
