@@ -74,3 +74,86 @@ def test_provider_as_llmprovider_instance(ai_article_zh, fake_polish_fn) -> None
         ai_article_zh, provider=provider
     )
     assert after is not None and after.total < before.total
+
+
+# ─── Phase 1.9: ReplacementsTable injection ──────────────────────────────
+
+
+def test_deterministic_cleanup_default_matches_zh_replacements_singleton() -> None:
+    """``_deterministic_cleanup(text)`` (default) and
+    ``_deterministic_cleanup(text, replacements=zh_replacements)`` must
+    return identical strings — proves the injection plumbing does not
+    silently change the ZH path's behavior.
+    """
+    from humanize_zh._lang.zh.replacements import zh_replacements
+    from humanize_zh.postprocess import _deterministic_cleanup
+
+    sample = (
+        "综上所述, 这个产品赋能了所有用户。\n"
+        "首先, 它解决了痛点。其次, 它提供闭环。最后, 它实现了价值。\n"
+        "「这段引语里的『综上所述』不应被替换」\n"
+    )
+    assert _deterministic_cleanup(sample) == _deterministic_cleanup(
+        sample, replacements=zh_replacements
+    )
+
+
+def test_deterministic_cleanup_uses_injected_table() -> None:
+    """A custom ``ReplacementsTable`` must drive substitutions, not the
+    ZH default loader.
+    """
+    from humanize_zh.postprocess import _deterministic_cleanup
+
+    class _StubTable:
+        code = "stub"
+
+        def ordered_pairs(self) -> list[tuple[str, str]]:
+            return [("foo", "BAR")]
+
+    out = _deterministic_cleanup("hello foo world", replacements=_StubTable())
+    # ZH defaults would not touch "foo", so the stub must be the one
+    # producing the substitution.
+    assert out == "hello BAR world"
+
+
+def test_deterministic_cleanup_empty_table_is_passthrough_modulo_backticks() -> None:
+    """Phase 3 EN plugin will likely ship an empty initial table; the
+    cleanup must still strip number-backticks (a language-agnostic op)
+    and leave the remaining text alone.
+    """
+    from humanize_zh.postprocess import _deterministic_cleanup
+
+    class _EmptyTable:
+        code = "stub"
+
+        def ordered_pairs(self) -> list[tuple[str, str]]:
+            return []
+
+    text = "result was `42` percent."
+    out = _deterministic_cleanup(text, replacements=_EmptyTable())
+    assert out == "result was 42 percent."
+
+
+def test_postprocess_humanize_threads_replacements_into_fallback(ai_article_zh) -> None:
+    """When the LLM is unavailable, the fallback path uses
+    ``_deterministic_cleanup`` and must honour the injected table.
+    """
+    from humanize_zh import postprocess_humanize
+
+    class _StubTable:
+        code = "stub"
+
+        def ordered_pairs(self) -> list[tuple[str, str]]:
+            return [("综上所述", "ZZZSENTINEL")]
+
+    polished, _, _ = postprocess_humanize(
+        ai_article_zh,
+        scene="analysis",
+        lang="zh",
+        replacements=_StubTable(),
+    )
+    # ZH defaults would delete "综上所述" entirely (replace → ""); the
+    # stub instead substitutes "ZZZSENTINEL", proving the injected
+    # table won and not the singleton's pairs.
+    assert "ZZZSENTINEL" in polished
+    assert "综上所述" not in polished

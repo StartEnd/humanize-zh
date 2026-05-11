@@ -29,7 +29,20 @@
     - voidborne-d/humanize-chinese  (HC3 校准 + ML 评分)
 """
 
+import contextlib
+
 from . import llm
+from ._core.language_registry import (
+    LanguageAlreadyRegistered,
+    UnknownLanguage,
+    get_language,
+    list_languages,
+    list_profiles,
+    register_language,
+    unregister_language,
+)
+from ._core.protocols import LanguageProfile
+from ._lang.zh.profile import zh_profile
 from .combined import CombinedScore, combined_score
 from .detect import Score, Violation, score
 from .iterative import IterativeResult, RoundResult, iterative_polish
@@ -40,6 +53,19 @@ from .postprocess import postprocess_humanize
 from .prompt import build_humanize_postprocess_prompt, build_humanize_prompt
 
 __version__ = "0.1.0a1"
+
+# ── Auto-register the built-in ZH profile on package import ─────────────
+#
+# Phase 1.11: every public entry-point (``judge`` / ``iterative_polish``
+# / ``postprocess_humanize`` / ``humanize providers``) can now look up a
+# language by code via :func:`get_language` without forcing callers to
+# hand-register first. We swallow ``LanguageAlreadyRegistered`` because:
+#   1. ``importlib.reload(humanize_zh)`` would otherwise raise.
+#   2. Tests sometimes clear+re-register; double-import is a no-op.
+# Any *other* error here is surfaced — a broken built-in profile is a
+# packaging bug we want to see immediately, not silently.
+with contextlib.suppress(LanguageAlreadyRegistered):
+    register_language(zh_profile)
 
 __all__ = [
     "__version__",
@@ -62,4 +88,14 @@ __all__ = [
     # prompts
     "build_humanize_prompt",
     "build_humanize_postprocess_prompt",
+    # language registry (Phase 1.11)
+    "LanguageProfile",
+    "get_language",
+    "list_languages",
+    "list_profiles",
+    "register_language",
+    "unregister_language",
+    "LanguageAlreadyRegistered",
+    "UnknownLanguage",
+    "zh_profile",
 ]

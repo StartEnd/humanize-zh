@@ -89,12 +89,18 @@ def test_engine_handle_is_cached() -> None:
 
 
 def test_unavailable_engine_returns_unknown_level(monkeypatch) -> None:
-    """If ``_load_engine`` returns None, score must surface available=False."""
-    from humanize_zh import ngram_check
+    """If ``_load_engine`` returns None, score must surface available=False.
 
-    monkeypatch.setattr(ngram_check, "_load_engine", lambda: None)
-    monkeypatch.setattr(ngram_check, "_ENGINE_LOAD_ERROR", "test-fake-missing", raising=False)
-    s = ngram_check.ngram_score("北京今天下了一整天雨。咖啡馆里很安静。" * 5)
+    NOTE: After the Phase-1 multi-language refactor, the implementation lives
+    in ``humanize_zh._lang.zh.ngram``; ``humanize_zh.ngram_check`` is a
+    compat shim. We monkeypatch the canonical module so ``ngram_score``'s
+    own globals see the override.
+    """
+    from humanize_zh._lang.zh import ngram as ngram_impl
+
+    monkeypatch.setattr(ngram_impl, "_load_engine", lambda: None)
+    monkeypatch.setattr(ngram_impl, "_ENGINE_LOAD_ERROR", "test-fake-missing", raising=False)
+    s = ngram_impl.ngram_score("北京今天下了一整天雨。咖啡馆里很安静。" * 5)
     assert s.available is False
     assert s.level == "UNKNOWN"
     assert s.ai_probability == 0.0

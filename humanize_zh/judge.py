@@ -49,6 +49,17 @@ import sys
 from pathlib import Path
 
 from . import llm as _llm_module
+
+# Phase 1.8 moved the JUDGE_PROMPT* template strings to their canonical
+# language modules. They are re-imported here so callers that still
+# reach for ``humanize_zh.judge.JUDGE_PROMPT`` keep working. Phase 1.10
+# rewires the ``judge()`` function below to prefer
+# ``LanguageProfile.prompt_pack.judge_user_template`` whenever a
+# profile is supplied — the constants below remain the no-profile
+# fallback.
+from ._core.prompt import JUDGE_PROMPT_EN
+from ._core.protocols import LanguageProfile
+from ._lang.zh.prompts import JUDGE_PROMPT
 from .llm import (
     LLMError,
     LLMNotConfiguredError,
@@ -59,140 +70,6 @@ from .llm import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-JUDGE_PROMPT = """# 任务: 给一篇网站分析文章做终审编辑审稿
-
-你是一位独立编辑, 专门审稿"网站流量深度分析"类的中文长文。
-你不写文章, 不点评作者, 只输出**结构化的审稿意见 JSON**。
-
-## 评判标准
-
-文章发表标准是: **读者愿意相信、愿意转发、读完能记住 1-2 个判断**。
-
-具体标准:
-1. **有可反驳的判断** — 不是常识句(「用户体验很重要」), 是能被一句反例推翻的具体断言
-2. **判断背后有证据链** — 每个核心断言后跟 ≥ 2 条具体数据或事实
-3. **结构由问题驱动** — 不是模板填空(总分总 / 11 节大纲 / 5W2H 套壳)
-4. **没有伪人味** — 没有编造的具体场景(凌晨三点 / 周三晚上)、没有虚构的第一人称经历(去年我接触过)、没有编造的对话(他在 Discord 里告诉我)
-5. **能记住 1-2 个判断** — 读完后读者应该能复述至少一个反直觉的具体结论
-
-## 你必须输出的 JSON
-
-严格按以下 schema, 不要加 markdown 代码块包裹:
-
-```
-{{
-  "publishable": <bool>,
-  "worst_ai_sections": [
-    {{"para": "<原文段落第一句的前 30 字>", "reason": "<具体的 AI 体特征>"}}
-  ],
-  "unsupported_claims": [
-    {{"claim": "<原文里的判断>", "missing_evidence": "<缺失的证据类型>"}}
-  ],
-  "template_smell": [
-    "<具体的模板感描述, 不是空话>"
-  ],
-  "fake_human_details": [
-    "<编造的具体场景或经历, 写出原文片段>"
-  ],
-  "best_theses": [
-    "<文章里最强的判断, 写出原文片段, 说明为什么强>"
-  ],
-  "rewrite_brief": "<3-5 句话告诉作者重点改哪里, 不超过 200 字>"
-}}
-```
-
-## 字段说明
-
-- `publishable`: true 仅当所有问题都是小问题, 且 best_theses 至少 1 条
-- `worst_ai_sections`: 最像 AI 写的 2-5 段(不是全部, 只挑最差的)
-- `unsupported_claims`: 没有数据支撑的判断, 最多 5 条
-- `template_smell`: 文章是否按模板填空, 给具体例子(不是"有点模板感"这种空话)
-- `fake_human_details`: 凌晨三点 / 去年我 / 朋友买过 / 他在 Discord 告诉我 等编造场景
-- `best_theses`: 最强的 1-3 个判断 — 这些可以保留
-- `rewrite_brief`: 给作者的 3-5 句话改稿建议, 不要废话
-
-## 严禁
-
-- 不要在 JSON 外加任何文字、解释、markdown
-- 不要在每个字段值里加 emoji
-- 不要给出"很好"、"还需努力"类空话
-- 不要重复检测器规则能抓的事(禁词、句式), 只看语义层面
-
----
-
-## 待审稿文章
-
-{ARTICLE}
-"""
-
-
-# ── 英文 judge prompt (用于 lang="en" 英文文章终审) ─────────────────
-JUDGE_PROMPT_EN = """# Task: Final editorial review of a long-form English article
-
-You are an independent editor reviewing deep-analysis long-form articles.
-You do not rewrite the piece. You output a **structured JSON review only**.
-
-## Bar for publication
-
-Publishable = a reader will believe it, share it, and remember 1-2 concrete
-takeaways after closing the tab.
-
-Concrete criteria:
-1. **Falsifiable claims** — not universal truisms, but specific assertions
-   that a counter-example could refute.
-2. **Each claim has evidence chain** — every core assertion backed by ≥2
-   specific numbers or facts.
-3. **Structure driven by questions** — not template filling (intro / body /
-   conclusion / 5W2H shell).
-4. **No fabricated human flavor** — no invented scenes ("at 3am last Tuesday"),
-   no fake first-person experience ("a founder told me"), no made-up quotes.
-5. **Memorable takeaways** — reader can restate ≥1 counter-intuitive concrete
-   conclusion from memory.
-
-## Required JSON output (no markdown wrapper)
-
-```
-{{
-  "publishable": <bool>,
-  "worst_ai_sections": [
-    {{"para": "<first 30 chars of paragraph>", "reason": "<specific AI tell>"}}
-  ],
-  "unsupported_claims": [
-    {{"claim": "<claim from article>", "missing_evidence": "<what's missing>"}}
-  ],
-  "template_smell": ["<concrete templated structure, not vague>"],
-  "fake_human_details": ["<fabricated scene / experience quoted from article>"],
-  "best_theses": ["<strongest claim, quoted, why it works>"],
-  "rewrite_brief": "<3-5 sentences telling the author what to change, <200 chars>"
-}}
-```
-
-## Field notes
-
-- `publishable`: true only if all issues are minor AND ≥1 best_thesis.
-- `worst_ai_sections`: pick the worst 2-5 (not all paragraphs).
-- `unsupported_claims`: up to 5.
-- `template_smell`: give concrete examples, not vague "feels a bit template".
-- `fake_human_details`: quote exact fabricated passages.
-- `best_theses`: 1-3 strongest claims with reasoning.
-- `rewrite_brief`: 3-5 sentences, no fluff.
-
-## Forbidden
-
-- No text outside the JSON (no markdown fences, no explanation).
-- No emoji inside field values.
-- No platitudes ("good start", "needs work").
-- Do not duplicate things a regex detector already catches (bad phrases,
-  cliche sentences); focus on semantic issues.
-
----
-
-## Article under review
-
-{ARTICLE}
-"""
 
 
 def _call_llm(prompt: str, *, provider: LLMProvider) -> str | None:
@@ -243,6 +120,7 @@ def judge(
     article: str,
     *,
     lang: str = "zh",
+    profile: LanguageProfile | None = None,
     writer_provider: ProviderArg = None,
     judge_provider: ProviderArg = None,
     allow_self_judge: bool = False,
@@ -251,7 +129,15 @@ def judge(
 
     Args:
         article: 待审文章 (原始 markdown)
-        lang: "zh" (默认, 中文 judge prompt) 或 "en" (英文 judge prompt)
+        lang: "zh" (默认, 中文 judge prompt) 或 "en" (英文 judge prompt).
+              若 ``profile`` 同时给出, ``profile.code`` 必须与 ``lang`` 一致,
+              否则视为调用方误传, 直接返回 ``{"_error": ...}``。
+        profile: Phase 1.10 新增 — 可选的
+                 :class:`~humanize_zh._core.protocols.LanguageProfile`. 给出时
+                 使用 ``profile.prompt_pack.judge_user_template`` 而不是
+                 ``lang`` 决定的 module-level 常量, 以便英文等其他语言插件
+                 注册后无需改 judge.py 即可生效。``None`` 时按 ``lang``
+                 选择 ``JUDGE_PROMPT`` / ``JUDGE_PROMPT_EN`` (与 v0.1.0a1 一致)。
         writer_provider: 写作用的 provider (用于防共谋, 仅作标识; 不实际调用).
                          支持: LLMProvider 实例 | str | None
         judge_provider:  评审 provider. 支持: LLMProvider 实例 | str | None
@@ -263,6 +149,13 @@ def judge(
     """
     if lang not in ("zh", "en"):
         return {"_error": f"lang must be 'zh' or 'en', got {lang!r}"}
+    if profile is not None and profile.code != lang:
+        return {
+            "_error": (
+                f"profile.code={profile.code!r} but lang={lang!r}; pass a profile "
+                "matching the requested language or omit one of the two args"
+            )
+        }
 
     # resolve writer (可选, 仅作标识)
     writer_resolved: LLMProvider | None = None
@@ -296,7 +189,10 @@ def judge(
             )
         }
 
-    template = JUDGE_PROMPT_EN if lang == "en" else JUDGE_PROMPT
+    if profile is not None:
+        template = profile.prompt_pack.judge_user_template
+    else:
+        template = JUDGE_PROMPT_EN if lang == "en" else JUDGE_PROMPT
     prompt = template.format(ARTICLE=article)
     logger.info(
         "[humanize_zh.judge] calling %s (lang=%s, prompt %d chars)",

@@ -25,14 +25,14 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 from . import llm as _llm_module
+from ._core.protocols import ReplacementsTable
+from ._lang.zh.replacements import _load_replacements
 from .detect import Score, Violation, score
 from .llm import (
     LLMError,
@@ -43,8 +43,6 @@ from .llm import (
 from .prompt import build_humanize_postprocess_prompt
 
 logger = logging.getLogger(__name__)
-
-_PATTERNS_PATH = Path(__file__).parent / "patterns.json"
 
 
 # 保护这些区间内的文本免被替换 — 引语 / 书名号 / 行内代码里的词改了会扭曲原意。
@@ -106,59 +104,33 @@ def _strip_number_backticks(text: str) -> str:
     return out
 
 
-@lru_cache(maxsize=1)
-def _load_replacements() -> tuple[tuple[str, str], ...]:
-    """Load deterministic replacement pairs from ``patterns.json::replacements``.
-
-    Buckets are applied in the order declared by the ``_order`` array
-    (insertion order if omitted). Within each bucket, pairs are sorted by
-    ``len(old)`` descending so that longer phrases win over shorter prefixes
-    they contain (e.g. ``可能已经`` matches before any hypothetical ``可能`` rule).
-    Returns a flat tuple so callers can iterate without re-parsing JSON.
-
-    On parse failure logs and returns an empty tuple — cleanup degrades to
-    a no-op rather than crashing the polish pipeline.
-    """
-    try:
-        data = json.loads(_PATTERNS_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        logger.error("[humanize_zh] cannot load %s: %s", _PATTERNS_PATH, e)
-        return ()
-    section = data.get("replacements") or {}
-    order = section.get("_order") or [
-        k for k in section if not k.startswith("_") and isinstance(section[k], list)
-    ]
-    pairs: list[tuple[str, str]] = []
-    for bucket in order:
-        items = section.get(bucket)
-        if not isinstance(items, list):
-            continue
-        bucket_pairs: list[tuple[str, str]] = []
-        for entry in items:
-            if (
-                isinstance(entry, list)
-                and len(entry) == 2
-                and isinstance(entry[0], str)
-                and isinstance(entry[1], str)
-            ):
-                bucket_pairs.append((entry[0], entry[1]))
-        bucket_pairs.sort(key=lambda p: -len(p[0]))
-        pairs.extend(bucket_pairs)
-    return tuple(pairs)
-
-
-def _deterministic_cleanup(text: str) -> str:
+def _deterministic_cleanup(
+    text: str,
+    *,
+    replacements: ReplacementsTable | None = None,
+) -> str:
     """机械清理一批高置信 AI 痕迹。
 
     这不是完整改写器, 只处理检测器已经明确标红、且替换后不改变事实的词和句式。
     引号 / 书名号 / 行内代码内的内容会被保护, 不参与替换 — 防止改原话和技术词。
-    替换表来自 ``patterns.json::replacements`` (见 :func:`_load_replacements`).
+
+    Args:
+        text: 输入文本。
+        replacements: 可注入的 :class:`~humanize_zh._core.protocols.ReplacementsTable`。
+            ``None`` (默认) 时直接调用 ZH 的
+            :func:`humanize_zh._lang.zh.replacements._load_replacements` —
+            与 v0.1.0a1 行为字节一致。Phase 1.10 之后, 上层会传入当前
+            ``LanguageProfile.replacements`` 完成跨语言派发。
     """
     # 先去掉数字反引号 (在 _protect_spans 之前, 因为反引号内会被保护)
     text = _strip_number_backticks(text)
 
+    pairs = (
+        replacements.ordered_pairs() if replacements is not None else _load_replacements()
+    )
+
     protected, spans = _protect_spans(text)
-    for old, new in _load_replacements():
+    for old, new in pairs:
         protected = protected.replace(old, new)
     cleaned = _restore_spans(protected, spans)
 
@@ -234,6 +206,7 @@ def postprocess_humanize(
     provider: ProviderArg = None,
     detect_first: bool = True,
     force_llm: bool = False,
+    replacements: ReplacementsTable | None = None,
 ) -> tuple[str, Score | None, Score | None]:
     """对一篇文章做"去 AI 味润色 pass"。
 
@@ -250,6 +223,12 @@ def postprocess_humanize(
                                  会尝试从 env 建; 建不起来抛 ValueError
         detect_first: 中文模式是否先跑 detect 给出 before-score
         force_llm: True 强制调 LLM (跳过"已达发布线"早期返回); 用于 UI 强制改写按钮
+        replacements: 可选的 :class:`~humanize_zh._core.protocols.ReplacementsTable`
+                      注入 — Phase 1.9 增加。``None`` 时(默认)走 ZH 内建的
+                      ``_load_replacements()``, 行为与 v0.1.0a1 字节一致;
+                      Phase 1.11 起 ``humanize_zh.cli`` / Web UI 会从当前
+                      ``LanguageProfile`` 取出对应语言的表传进来。
+                      仅 ``lang="zh"`` 路径生效 — 英文路径目前不应用替换表。
 
     Returns:
         (polished_text, score_after_or_None, score_before_or_None)
@@ -304,7 +283,7 @@ def postprocess_humanize(
 
     polished = _call_llm(prompt, provider=provider)
     if not polished:
-        fallback = _deterministic_cleanup(article)
+        fallback = _deterministic_cleanup(article, replacements=replacements)
         score_after = score(fallback)
         logger.warning(
             "[humanize_zh] LLM 失败, 使用确定性清理 fallback: %.1f (%s)",
@@ -316,11 +295,18 @@ def postprocess_humanize(
         # User explicitly asked for LLM rewrite; trust it even if combined-score is higher.
         # combined-score is a rule-based metric and may not align with transformer-based
         # third-party detectors (Zhuque / Originality / GPTZero).
-        best = _best_candidate([polished, _deterministic_cleanup(polished)])
+        best = _best_candidate(
+            [polished, _deterministic_cleanup(polished, replacements=replacements)]
+        )
         logger.info("[humanize_zh] force_llm=True, 跳过原文回退, 选 LLM 候选中较优者")
     else:
         best = _best_candidate(
-            [article, _deterministic_cleanup(article), polished, _deterministic_cleanup(polished)]
+            [
+                article,
+                _deterministic_cleanup(article, replacements=replacements),
+                polished,
+                _deterministic_cleanup(polished, replacements=replacements),
+            ]
         )
         if best != polished:
             logger.info("[humanize_zh] LLM 未必最优, 按 combined 分选择更低分候选")

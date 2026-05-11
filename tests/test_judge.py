@@ -261,3 +261,64 @@ def test_parse_json_pure_array_returns_error() -> None:
     """A bare array (no embedded object) is rejected at the substring stage."""
     parsed = _parse_json(json.dumps([1, 2, 3]))
     assert "_parse_error" in parsed
+
+
+# ─── Phase 1.10: LanguageProfile injection ──────────────────────────────
+
+
+def test_judge_profile_overrides_lang_template(ai_article_zh, fake_judge_fn) -> None:
+    """When a ``LanguageProfile`` is passed, its ``judge_user_template``
+    drives the prompt — the ``lang``-keyed module fallback should be
+    bypassed even if ``lang="zh"``.
+    """
+    from dataclasses import replace
+
+    from humanize_zh._lang.zh.profile import zh_profile
+
+    captured: list[str] = []
+
+    def _capture_fn(prompt: str) -> str:
+        captured.append(prompt)
+        return fake_judge_fn(prompt)
+
+    sentinel_template = "SENTINEL-PROMPT::{ARTICLE}"
+    custom_pack = replace(zh_profile.prompt_pack, judge_user_template=sentinel_template)
+    custom_profile = replace(zh_profile, prompt_pack=custom_pack)
+
+    j = CallableProvider(_capture_fn, name="cap", model="m1")
+    judge(ai_article_zh, profile=custom_profile, judge_provider=j)
+    assert captured, "judge() did not call the LLM"
+    assert captured[0].startswith("SENTINEL-PROMPT::"), captured[0][:60]
+
+
+def test_judge_profile_lang_mismatch_returns_error(ai_article_en, fake_judge_fn) -> None:
+    """Passing ``lang="en"`` with a ZH profile must be flagged early
+    rather than silently using the wrong template."""
+    from humanize_zh._lang.zh.profile import zh_profile
+
+    j = CallableProvider(fake_judge_fn, name="j", model="j1")
+    result = judge(ai_article_en, lang="en", profile=zh_profile, judge_provider=j)
+    assert "_error" in result
+    assert "profile.code='zh'" in result["_error"]
+    assert "lang='en'" in result["_error"]
+
+
+def test_judge_no_profile_keeps_v0_1_0a1_behavior(ai_article_zh, fake_judge_fn) -> None:
+    """With ``profile=None`` (default), the prompt must still be the
+    canonical ZH ``JUDGE_PROMPT`` from ``_lang.zh.prompts``.
+    """
+    from humanize_zh._lang.zh.prompts import JUDGE_PROMPT
+
+    captured: list[str] = []
+
+    def _capture_fn(prompt: str) -> str:
+        captured.append(prompt)
+        return fake_judge_fn(prompt)
+
+    j = CallableProvider(_capture_fn, name="cap", model="m1")
+    judge(ai_article_zh, lang="zh", judge_provider=j)
+    assert captured
+    expected_prefix = JUDGE_PROMPT.split("{ARTICLE}", 1)[0][:40]
+    assert captured[0].startswith(expected_prefix), (
+        f"default ZH judge prompt drifted from JUDGE_PROMPT; got prefix {captured[0][:60]!r}"
+    )

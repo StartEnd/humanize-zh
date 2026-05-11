@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Multi-language plugin scaffold (Phase 1)** — internal architecture
+  refactor preparing the ground for a `humanize-en` sibling package.
+  Zero observable change for v0.1 callers: every public import,
+  function signature, CLI flag, and Web UI route is byte-identical;
+  the existing 215 tests pass unchanged.
+  - New `humanize_zh._core/` (framework): `protocols.py` declares the
+    `Detector` / `NgramEngine` / `ReplacementsTable` / `PromptPack` /
+    `LanguageProfile` runtime-checkable protocols, and
+    `language_registry.py` provides thread-safe
+    `register_language` / `get_language` / `list_languages` plus
+    entry-point discovery under `humanize_core.languages`.
+  - New `humanize_zh._lang/zh/` (built-in plugin): the ZH detector,
+    n-gram engine, replacements table, prompts, and assembled
+    `zh_profile` live here. `humanize_zh.detect` / `humanize_zh.ngram_check`
+    are kept as thin compat shims that re-export from the canonical
+    locations.
+  - `humanize_zh/__init__.py` auto-registers `zh_profile` on import
+    and exposes the registry surface
+    (`get_language`, `register_language`, `LanguageProfile`, …).
+  - `humanize_zh.judge()` and `humanize_zh.iterative_polish()` accept an
+    optional `profile: LanguageProfile`; `humanize_zh.postprocess_humanize`
+    accepts an optional `replacements: ReplacementsTable`. Defaults
+    preserve v0.1.0a1 behavior bit-for-bit.
+  - +71 net tests: `tests/test_protocols.py` covers the protocol /
+    registry contracts; `tests/test_en_dry_run.py` plugs a stub English
+    profile end-to-end through `judge` / `iterative_polish` /
+    `postprocess` via the registry, proving the protocol surface is
+    sufficient for a real Phase-3 EN plugin without framework changes.
+  - Design recorded in `docs/plan-multilang.md`.
 - `humanize_zh.web._security.AbuseControlMiddleware` — opt-in
   Bearer-token auth and per-IP rolling-window rate limiting. Activate
   via `HUMANIZE_ZH_WEB_TOKEN` and/or
