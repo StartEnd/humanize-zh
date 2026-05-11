@@ -1,0 +1,51 @@
+# Pre-commit hooks for humanize-zh.
+#
+# Install:
+#     uv run pre-commit install
+#
+# Run on all files:
+#     uv run pre-commit run --all-files
+#
+# We mirror the CI gates (ruff + mypy) so a clean `pre-commit run` means
+# the push will not fail on lint/type. Pytest is intentionally NOT here —
+# the suite runs ~2s but pre-commit should stay sub-second for fast loops.
+
+default_language_version:
+  python: python3.11
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: ^humanize_zh/patterns\.json$  # contains \u escapes ruff doesn't like
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.13.5
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.18.2
+    hooks:
+      - id: mypy
+        # Mirror pyproject.toml's mypy config so the hook sees the same rules
+        # as `make typecheck`. Type-stub deps live under [project.optional-dependencies.dev].
+        additional_dependencies:
+          - fastapi
+          - httpx
+          - jinja2
+          - openai
+          - anthropic
+          - python-multipart
+        files: ^humanize_zh/
