@@ -624,6 +624,48 @@ def test_zh_replacements_loader_failure_returns_empty_tuple(tmp_path, monkeypatc
         repl_mod._load_replacements.cache_clear()  # reset for downstream tests
 
 
+def test_zh_prompt_shim_re_exports_canonical_modules() -> None:
+    """Phase 1.7 split ``humanize_zh.prompt`` into:
+
+    - ``humanize_zh._lang.zh.prompts`` (ZH constants + builder + ZH templates)
+    - ``humanize_zh._core.prompt`` (cross-language dispatcher + EN placeholder)
+
+    The legacy ``humanize_zh.prompt`` module is now a re-export shim. Every
+    public name must be the *same object* on both sides — drift would mean
+    we silently maintain two copies of the rules and they'd diverge.
+    """
+    from humanize_zh import prompt as shim
+    from humanize_zh._core import prompt as core
+    from humanize_zh._lang.zh import prompts as zh
+
+    zh_owned = {
+        "ASSERTION_TEMPLATE", "CORE_RULES", "HARD_LIMITS", "HARD_NEVER",
+        "OPENING_DIVERSITY", "POSTPROCESS_PROMPT", "POSTPROCESS_PROMPT_AGGRESSIVE",
+        "SCENES", "SELF_CHECK", "SOUL_INJECTION", "WORDS_BLACKLIST",
+        "build_humanize_prompt",
+    }
+    core_owned = {"POSTPROCESS_PROMPT_EN", "build_humanize_postprocess_prompt"}
+
+    for name in zh_owned:
+        assert getattr(shim, name) is getattr(zh, name), f"shim.{name} drifted from ZH canonical"
+    for name in core_owned:
+        assert getattr(shim, name) is getattr(core, name), f"shim.{name} drifted from core canonical"
+
+
+def test_postprocess_dispatcher_picks_correct_template_per_lang() -> None:
+    """Lang dispatch must route ``zh`` / ``en`` to the right template,
+    and rely only on the LANG flag (not on detector violations).
+    """
+    from humanize_zh._core.prompt import build_humanize_postprocess_prompt
+
+    zh_out = build_humanize_postprocess_prompt("article", [], lang="zh", scene="analysis")
+    en_out = build_humanize_postprocess_prompt("article", [], lang="en")
+    assert "去 AI 味" in zh_out
+    assert "De-AI polishing pass" in en_out
+    assert "去 AI 味" not in en_out
+    assert "De-AI polishing pass" not in zh_out
+
+
 def test_postprocess_imports_load_replacements_from_canonical_module() -> None:
     """Phase 1.6 moved the loader out of ``postprocess.py``. Guard against
     drift / accidental re-introduction of a duplicate implementation.
