@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 from . import llm as _llm_module
+from ._core.protocols import ReplacementsTable
 from ._lang.zh.replacements import _load_replacements
 from .detect import Score, Violation, score
 from .llm import (
@@ -103,19 +104,33 @@ def _strip_number_backticks(text: str) -> str:
     return out
 
 
-def _deterministic_cleanup(text: str) -> str:
+def _deterministic_cleanup(
+    text: str,
+    *,
+    replacements: ReplacementsTable | None = None,
+) -> str:
     """机械清理一批高置信 AI 痕迹。
 
     这不是完整改写器, 只处理检测器已经明确标红、且替换后不改变事实的词和句式。
     引号 / 书名号 / 行内代码内的内容会被保护, 不参与替换 — 防止改原话和技术词。
-    替换表来自 ``humanize_zh/_lang/zh/data/replacements.json``
-    (见 :func:`humanize_zh._lang.zh.replacements._load_replacements`).
+
+    Args:
+        text: 输入文本。
+        replacements: 可注入的 :class:`~humanize_zh._core.protocols.ReplacementsTable`。
+            ``None`` (默认) 时直接调用 ZH 的
+            :func:`humanize_zh._lang.zh.replacements._load_replacements` —
+            与 v0.1.0a1 行为字节一致。Phase 1.10 之后, 上层会传入当前
+            ``LanguageProfile.replacements`` 完成跨语言派发。
     """
     # 先去掉数字反引号 (在 _protect_spans 之前, 因为反引号内会被保护)
     text = _strip_number_backticks(text)
 
+    pairs = (
+        replacements.ordered_pairs() if replacements is not None else _load_replacements()
+    )
+
     protected, spans = _protect_spans(text)
-    for old, new in _load_replacements():
+    for old, new in pairs:
         protected = protected.replace(old, new)
     cleaned = _restore_spans(protected, spans)
 
@@ -191,6 +206,7 @@ def postprocess_humanize(
     provider: ProviderArg = None,
     detect_first: bool = True,
     force_llm: bool = False,
+    replacements: ReplacementsTable | None = None,
 ) -> tuple[str, Score | None, Score | None]:
     """对一篇文章做"去 AI 味润色 pass"。
 
@@ -207,6 +223,12 @@ def postprocess_humanize(
                                  会尝试从 env 建; 建不起来抛 ValueError
         detect_first: 中文模式是否先跑 detect 给出 before-score
         force_llm: True 强制调 LLM (跳过"已达发布线"早期返回); 用于 UI 强制改写按钮
+        replacements: 可选的 :class:`~humanize_zh._core.protocols.ReplacementsTable`
+                      注入 — Phase 1.9 增加。``None`` 时(默认)走 ZH 内建的
+                      ``_load_replacements()``, 行为与 v0.1.0a1 字节一致;
+                      Phase 1.11 起 ``humanize_zh.cli`` / Web UI 会从当前
+                      ``LanguageProfile`` 取出对应语言的表传进来。
+                      仅 ``lang="zh"`` 路径生效 — 英文路径目前不应用替换表。
 
     Returns:
         (polished_text, score_after_or_None, score_before_or_None)
@@ -261,7 +283,7 @@ def postprocess_humanize(
 
     polished = _call_llm(prompt, provider=provider)
     if not polished:
-        fallback = _deterministic_cleanup(article)
+        fallback = _deterministic_cleanup(article, replacements=replacements)
         score_after = score(fallback)
         logger.warning(
             "[humanize_zh] LLM 失败, 使用确定性清理 fallback: %.1f (%s)",
@@ -273,11 +295,18 @@ def postprocess_humanize(
         # User explicitly asked for LLM rewrite; trust it even if combined-score is higher.
         # combined-score is a rule-based metric and may not align with transformer-based
         # third-party detectors (Zhuque / Originality / GPTZero).
-        best = _best_candidate([polished, _deterministic_cleanup(polished)])
+        best = _best_candidate(
+            [polished, _deterministic_cleanup(polished, replacements=replacements)]
+        )
         logger.info("[humanize_zh] force_llm=True, 跳过原文回退, 选 LLM 候选中较优者")
     else:
         best = _best_candidate(
-            [article, _deterministic_cleanup(article), polished, _deterministic_cleanup(polished)]
+            [
+                article,
+                _deterministic_cleanup(article, replacements=replacements),
+                polished,
+                _deterministic_cleanup(polished, replacements=replacements),
+            ]
         )
         if best != polished:
             logger.info("[humanize_zh] LLM 未必最优, 按 combined 分选择更低分候选")
