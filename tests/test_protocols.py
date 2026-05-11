@@ -578,6 +578,43 @@ def test_zh_detector_compat_shim_re_exports_full_surface() -> None:
         )
 
 
+def test_zh_ngram_adapter_satisfies_ngram_engine_protocol() -> None:
+    """End-to-end smoke for the ZH plugin's NgramEngine adapter."""
+    from humanize_zh._lang.zh.ngram import ZhNgramEngine, zh_ngram
+
+    assert isinstance(zh_ngram, NgramEngine)
+    assert zh_ngram.code == "zh"
+    assert isinstance(zh_ngram.available, bool)
+    if zh_ngram.available:
+        assert zh_ngram.reason_unavailable() is None
+        result = zh_ngram.score("北京今天下了一整天雨。" * 12)
+        assert isinstance(result, NgramScoreResult)
+    # Even when available, ``reason_unavailable()`` must be safely callable.
+    assert isinstance(ZhNgramEngine(), NgramEngine)
+
+
+def test_zh_ngram_compat_shim_re_exports_full_surface() -> None:
+    """The ``humanize_zh.ngram_check`` shim must preserve every name that
+    tests + downstream code imports.
+    """
+    from humanize_zh import ngram_check as shim
+    expected = {
+        "DATA_DIR", "NgramScore", "ZhNgramEngine",
+        "_ENGINE", "_ENGINE_LOAD_ERROR", "_ENGINE_PATH",
+        "_load_engine", "_safe_call", "main", "ngram_score", "zh_ngram",
+    }
+    assert expected <= set(dir(shim))
+    from humanize_zh._lang.zh import ngram as canonical
+    for name in expected:
+        # ``_ENGINE`` / ``_ENGINE_LOAD_ERROR`` are module-level mutables
+        # that get rebound by load — value-equality, not identity.
+        if name in {"_ENGINE", "_ENGINE_LOAD_ERROR"}:
+            continue
+        assert getattr(shim, name) is getattr(canonical, name), (
+            f"shim.{name} drifted from canonical implementation"
+        )
+
+
 # ─── Sufficiency check: pretend we're shipping an EN plugin ──────────────
 
 

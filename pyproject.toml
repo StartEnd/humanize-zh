@@ -49,14 +49,14 @@ build-backend = "hatchling.build"
 packages = ["humanize_zh"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"humanize_zh/data" = "humanize_zh/data"
+"humanize_zh/_lang/zh/data" = "humanize_zh/_lang/zh/data"
 "humanize_zh/patterns.json" = "humanize_zh/patterns.json"
 "humanize_zh/web/templates" = "humanize_zh/web/templates"
 
 [tool.ruff]
 line-length = 120
 target-version = "py310"
-extend-exclude = ["humanize_zh/data/_ngram_engine.py"]
+extend-exclude = ["humanize_zh/_lang/zh/data/_ngram_engine.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]
@@ -70,7 +70,7 @@ addopts = "--cov=humanize_zh --cov-report=term-missing --cov-report=xml"
 [tool.coverage.run]
 source = ["humanize_zh"]
 omit = [
-    "humanize_zh/data/_ngram_engine.py",  # third-party embedded module
+    "humanize_zh/_lang/zh/data/_ngram_engine.py",  # third-party embedded module
 ]
 
 [tool.coverage.report]
@@ -94,7 +94,7 @@ no_implicit_optional = true
 warn_redundant_casts = true
 disallow_any_generics = false
 exclude = [
-    "humanize_zh/data/_ngram_engine.py",
+    "humanize_zh/_lang/zh/data/_ngram_engine.py",
     "tests/",
     "build/",
     "dist/",
