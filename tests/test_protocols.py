@@ -537,6 +537,47 @@ def test_discovery_swallows_entry_points_function_failure(clean_registry) -> Non
     assert codes == []  # discovery returned cleanly; registry empty
 
 
+# ─── Real ZH plugin adapter ─────────────────────────────────────────────
+
+
+def test_zh_detector_adapter_satisfies_detector_protocol() -> None:
+    """End-to-end smoke test for the real ZH plugin's Detector adapter.
+
+    The class-attribute ``code`` and the lazy-loaded ``version`` must
+    both be present and string-typed, and ``score()`` must return a
+    Score that satisfies :class:`RuleScoreResult`.
+    """
+    from humanize_zh._lang.zh.detector import ZhDetector, zh_detector
+
+    assert isinstance(zh_detector, Detector)
+    assert zh_detector.code == "zh"
+    assert isinstance(zh_detector.version, str)
+    assert zh_detector.version  # non-empty
+    result = zh_detector.score("综上所述, 我们需要深入探讨这个问题")
+    assert isinstance(result, RuleScoreResult)
+    assert result.total > 0  # the test sentence is full of LLM-tells
+    # Class-only smoke (in case singleton is mutated by a future test).
+    assert isinstance(ZhDetector(), Detector)
+
+
+def test_zh_detector_compat_shim_re_exports_full_surface() -> None:
+    """v0.1.0a1 users import via ``humanize_zh.detect`` directly — the
+    shim must preserve every documented + test-imported symbol.
+    """
+    from humanize_zh import detect as shim
+    expected = {
+        "PATTERNS_PATH", "Score", "Violation", "ZhDetector",
+        "_load_patterns", "_strip_codeblocks", "main", "score", "zh_detector",
+    }
+    assert expected <= set(dir(shim))
+    # The shim symbols and the new-location symbols must be the same objects.
+    from humanize_zh._lang.zh import detector as canonical
+    for name in expected:
+        assert getattr(shim, name) is getattr(canonical, name), (
+            f"shim.{name} drifted from canonical implementation"
+        )
+
+
 # ─── Sufficiency check: pretend we're shipping an EN plugin ──────────────
 
 
