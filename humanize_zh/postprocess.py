@@ -25,14 +25,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 from . import llm as _llm_module
+from ._lang.zh.replacements import _load_replacements
 from .detect import Score, Violation, score
 from .llm import (
     LLMError,
@@ -43,8 +42,6 @@ from .llm import (
 from .prompt import build_humanize_postprocess_prompt
 
 logger = logging.getLogger(__name__)
-
-_PATTERNS_PATH = Path(__file__).parent / "patterns.json"
 
 
 # 保护这些区间内的文本免被替换 — 引语 / 书名号 / 行内代码里的词改了会扭曲原意。
@@ -106,53 +103,13 @@ def _strip_number_backticks(text: str) -> str:
     return out
 
 
-@lru_cache(maxsize=1)
-def _load_replacements() -> tuple[tuple[str, str], ...]:
-    """Load deterministic replacement pairs from ``patterns.json::replacements``.
-
-    Buckets are applied in the order declared by the ``_order`` array
-    (insertion order if omitted). Within each bucket, pairs are sorted by
-    ``len(old)`` descending so that longer phrases win over shorter prefixes
-    they contain (e.g. ``可能已经`` matches before any hypothetical ``可能`` rule).
-    Returns a flat tuple so callers can iterate without re-parsing JSON.
-
-    On parse failure logs and returns an empty tuple — cleanup degrades to
-    a no-op rather than crashing the polish pipeline.
-    """
-    try:
-        data = json.loads(_PATTERNS_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        logger.error("[humanize_zh] cannot load %s: %s", _PATTERNS_PATH, e)
-        return ()
-    section = data.get("replacements") or {}
-    order = section.get("_order") or [
-        k for k in section if not k.startswith("_") and isinstance(section[k], list)
-    ]
-    pairs: list[tuple[str, str]] = []
-    for bucket in order:
-        items = section.get(bucket)
-        if not isinstance(items, list):
-            continue
-        bucket_pairs: list[tuple[str, str]] = []
-        for entry in items:
-            if (
-                isinstance(entry, list)
-                and len(entry) == 2
-                and isinstance(entry[0], str)
-                and isinstance(entry[1], str)
-            ):
-                bucket_pairs.append((entry[0], entry[1]))
-        bucket_pairs.sort(key=lambda p: -len(p[0]))
-        pairs.extend(bucket_pairs)
-    return tuple(pairs)
-
-
 def _deterministic_cleanup(text: str) -> str:
     """机械清理一批高置信 AI 痕迹。
 
     这不是完整改写器, 只处理检测器已经明确标红、且替换后不改变事实的词和句式。
     引号 / 书名号 / 行内代码内的内容会被保护, 不参与替换 — 防止改原话和技术词。
-    替换表来自 ``patterns.json::replacements`` (见 :func:`_load_replacements`).
+    替换表来自 ``humanize_zh/_lang/zh/data/replacements.json``
+    (见 :func:`humanize_zh._lang.zh.replacements._load_replacements`).
     """
     # 先去掉数字反引号 (在 _protect_spans 之前, 因为反引号内会被保护)
     text = _strip_number_backticks(text)

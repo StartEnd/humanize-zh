@@ -18,14 +18,11 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-PATTERNS_PATH = Path(__file__).parent / "patterns.json"
-
-
-def _load_patterns() -> dict:
-    return json.loads(PATTERNS_PATH.read_text(encoding="utf-8"))
+# Phase 1.6 removed the unused ``_load_patterns`` / ``PATTERNS_PATH``
+# scaffolding from this module — the prompt builder is purely string
+# templating and never consulted ``patterns.json``. Phase 1.7 will
+# split this file into a framework piece (``_core``) and a ZH-specific
+# piece (``_lang/zh/prompts.py``).
 
 
 # ── 5 大写作铁律(综合 Humanizer-zh + writing-humanizer)─────────

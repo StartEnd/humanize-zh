@@ -593,6 +593,46 @@ def test_zh_ngram_adapter_satisfies_ngram_engine_protocol() -> None:
     assert isinstance(ZhNgramEngine(), NgramEngine)
 
 
+def test_zh_replacements_adapter_satisfies_replacements_table_protocol() -> None:
+    """End-to-end smoke for the ZH plugin's ReplacementsTable adapter."""
+    from humanize_zh._lang.zh.replacements import ZhReplacementsTable, zh_replacements
+
+    assert isinstance(zh_replacements, ReplacementsTable)
+    assert zh_replacements.code == "zh"
+    pairs = zh_replacements.ordered_pairs()
+    assert isinstance(pairs, tuple)
+    assert pairs, "real ZH replacements.json should ship with at least one pair"
+    for entry in pairs:
+        assert isinstance(entry, tuple) and len(entry) == 2
+        assert isinstance(entry[0], str) and isinstance(entry[1], str)
+    # Class-only smoke (in case the singleton is mutated by a future test).
+    assert isinstance(ZhReplacementsTable(), ReplacementsTable)
+
+
+def test_zh_replacements_loader_failure_returns_empty_tuple(tmp_path, monkeypatch) -> None:
+    """Polish pipeline must degrade to a no-op when ``replacements.json``
+    is missing or malformed — never raise into callers.
+    """
+    from humanize_zh._lang.zh import replacements as repl_mod
+
+    bogus = tmp_path / "missing.json"  # path that does not exist
+    monkeypatch.setattr(repl_mod, "REPLACEMENTS_PATH", bogus)
+    repl_mod._load_replacements.cache_clear()
+    try:
+        assert repl_mod._load_replacements() == ()
+    finally:
+        repl_mod._load_replacements.cache_clear()  # reset for downstream tests
+
+
+def test_postprocess_imports_load_replacements_from_canonical_module() -> None:
+    """Phase 1.6 moved the loader out of ``postprocess.py``. Guard against
+    drift / accidental re-introduction of a duplicate implementation.
+    """
+    from humanize_zh import postprocess
+    from humanize_zh._lang.zh import replacements as canonical
+    assert postprocess._load_replacements is canonical._load_replacements
+
+
 def test_zh_ngram_compat_shim_re_exports_full_surface() -> None:
     """The ``humanize_zh.ngram_check`` shim must preserve every name that
     tests + downstream code imports.

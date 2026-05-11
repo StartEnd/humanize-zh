@@ -37,10 +37,13 @@ from statistics import mean, pstdev
 
 from ..._format import level_label
 
-# patterns.json currently lives next to the top-level humanize_zh package.
-# Phase 1.6 will split it into ``rules.json`` + ``replacements.json`` under
-# this directory; until then, walk up two levels to find the legacy file.
-PATTERNS_PATH = Path(__file__).resolve().parents[2] / "patterns.json"
+# Phase 1.6 split the monolithic ``patterns.json`` into ``rules.json``
+# (detector) + ``replacements.json`` (postprocess). The historical
+# ``PATTERNS_PATH`` constant is kept for backwards compatibility — it
+# points at the new ``rules.json`` since that's the file the detector
+# actually consumes. Tests that read ``PATTERNS_PATH`` (looking for
+# ``_meta.version``) keep working because both halves carry ``_meta``.
+PATTERNS_PATH = Path(__file__).parent / "data" / "rules.json"
 
 
 @dataclass
