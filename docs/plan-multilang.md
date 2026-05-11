@@ -1,6 +1,7 @@
 # Multi-language refactor plan — `humanize-zh` → `humanize-core` + plugins
 
-**Status**: approved 2026-05-11. Branch: `multilang-spike` (Phase 1).
+**Status**: Phase 1 ✅ landed 2026-05-11 (commits P1.1–P1.12 on
+`multilang-spike`). Next: Phase 2 (package extraction).
 
 ## 0. Goal & Done
 
@@ -130,33 +131,40 @@ registers `code = "humanize_zh:profile"`. Core scans on import via
 
 ## 4. Migration phases
 
-### Phase 1 — In-repo spike (1.5 days)
+### Phase 1 — In-repo spike (✅ landed 2026-05-11)
 
 Goal: validate the protocol design, smallest blast radius.
 
-1. Add `humanize_zh/_core/` (temporary location)
-   - `_core/protocols.py` — protocol definitions
-   - `_core/language_registry.py` — register / get / list
-2. Add `humanize_zh/_lang/zh/` subpackage
-   - Move `detect.py` → `_lang/zh/detector.py`, adapt to protocol
-   - Move `ngram_check.py` → `_lang/zh/ngram.py`
-   - Split `patterns.json` into `rules.json` + `replacements.json` in `_lang/zh/data/`
-   - Add `_lang/zh/profile.py` to assemble `LanguageProfile`
-3. Refactor `postprocess.py` / `judge.py` / `iterative.py` / `combined.py`
-   to accept `LanguageProfile`
-4. Compat shim at top-level `humanize_zh/__init__.py`:
-   ```python
-   from ._lang.zh.profile import profile as _zh_profile
-   from ._core.language_registry import register_language
-   register_language(_zh_profile)
-   from ._lang.zh.detector import score
-   from .postprocess import postprocess_humanize  # default lang="zh"
-   # ... full v0.1 surface re-exported
-   ```
-5. **Hard gate**: 215 tests pass with at most ~5 import-path tweaks.
+Sub-phases as actually shipped (one commit each on `multilang-spike`):
 
-Exit criterion: `pytest` 215 passed (+ ~15 new protocol tests), ruff +
-mypy clean.
+1. **P1.1** — `_core/protocols.py` (Detector / NgramEngine / ReplacementsTable
+   / PromptPack / LanguageProfile + result protocols).
+2. **P1.2** — `_core/language_registry.py` (register / get / list /
+   entry-point discovery, thread-safe).
+3. **P1.3** — `tests/test_protocols.py` baseline contract tests.
+4. **P1.4** — `detect.py` → `_lang/zh/detector.py` (+ `ZhDetector` adapter,
+   compat shim at `humanize_zh.detect`).
+5. **P1.5** — `ngram_check.py` → `_lang/zh/ngram.py` (+ `ZhNgramEngine`,
+   compat shim).
+6. **P1.6** — `patterns.json` split → `rules.json` + `replacements.json`;
+   `ZhReplacementsTable` adapter.
+7. **P1.7** — `prompt.py` split (framework dispatcher → `_core/prompt.py`,
+   ZH content → `_lang/zh/prompts.py`).
+8. **P1.8** — `_lang/zh/profile.py` assembled (singleton + factory) and
+   `level_labels` pinned against `_format.level_label`.
+9. **P1.9** — `postprocess.py` accepts injected `ReplacementsTable`.
+10. **P1.10** — `judge.py` + `iterative.py` accept optional
+    `LanguageProfile`; `loop_judge_user_template` added to `PromptPack`.
+11. **P1.11** — `humanize_zh/__init__.py` auto-registers `zh_profile` on
+    import; package re-exports the registry surface.
+12. **P1.12** — EN pseudo-impl dry-run (`tests/test_en_dry_run.py`)
+    plugs a stub `LanguageProfile` end-to-end through `judge` /
+    `iterative_polish` / `postprocess` via the registry — proves the
+    protocol surface is sufficient for a real Phase-3 EN plugin.
+
+**Exit criterion (met)**: 286 passed / 7 skipped (was 215 pre-spike);
++71 net tests; ruff + mypy clean; CLI (`humanize_zh.detect` /
+`humanize_zh.ngram_check`) output byte-identical to v0.1.0a1.
 
 ### Phase 2 — Package extraction (1 day)
 
