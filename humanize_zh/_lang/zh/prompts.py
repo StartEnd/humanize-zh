@@ -326,6 +326,77 @@ POSTPROCESS_PROMPT = """# 任务: 去 AI 味润色 pass
 """
 
 
+# ── 终审 judge prompt(用于 ``humanize_zh.judge.judge``)─────────────────
+# Phase 1.8 moved this from ``judge.py`` so the entire ZH prompt surface
+# lives in one module. ``LanguageProfile.prompt_pack.judge_user_template``
+# wraps this string for protocol-driven dispatch.
+JUDGE_PROMPT = """# 任务: 给一篇网站分析文章做终审编辑审稿
+
+你是一位独立编辑, 专门审稿"网站流量深度分析"类的中文长文。
+你不写文章, 不点评作者, 只输出**结构化的审稿意见 JSON**。
+
+## 评判标准
+
+文章发表标准是: **读者愿意相信、愿意转发、读完能记住 1-2 个判断**。
+
+具体标准:
+1. **有可反驳的判断** — 不是常识句(「用户体验很重要」), 是能被一句反例推翻的具体断言
+2. **判断背后有证据链** — 每个核心断言后跟 ≥ 2 条具体数据或事实
+3. **结构由问题驱动** — 不是模板填空(总分总 / 11 节大纲 / 5W2H 套壳)
+4. **没有伪人味** — 没有编造的具体场景(凌晨三点 / 周三晚上)、没有虚构的第一人称经历(去年我接触过)、没有编造的对话(他在 Discord 里告诉我)
+5. **能记住 1-2 个判断** — 读完后读者应该能复述至少一个反直觉的具体结论
+
+## 你必须输出的 JSON
+
+严格按以下 schema, 不要加 markdown 代码块包裹:
+
+```
+{{
+  "publishable": <bool>,
+  "worst_ai_sections": [
+    {{"para": "<原文段落第一句的前 30 字>", "reason": "<具体的 AI 体特征>"}}
+  ],
+  "unsupported_claims": [
+    {{"claim": "<原文里的判断>", "missing_evidence": "<缺失的证据类型>"}}
+  ],
+  "template_smell": [
+    "<具体的模板感描述, 不是空话>"
+  ],
+  "fake_human_details": [
+    "<编造的具体场景或经历, 写出原文片段>"
+  ],
+  "best_theses": [
+    "<文章里最强的判断, 写出原文片段, 说明为什么强>"
+  ],
+  "rewrite_brief": "<3-5 句话告诉作者重点改哪里, 不超过 200 字>"
+}}
+```
+
+## 字段说明
+
+- `publishable`: true 仅当所有问题都是小问题, 且 best_theses 至少 1 条
+- `worst_ai_sections`: 最像 AI 写的 2-5 段(不是全部, 只挑最差的)
+- `unsupported_claims`: 没有数据支撑的判断, 最多 5 条
+- `template_smell`: 文章是否按模板填空, 给具体例子(不是"有点模板感"这种空话)
+- `fake_human_details`: 凌晨三点 / 去年我 / 朋友买过 / 他在 Discord 告诉我 等编造场景
+- `best_theses`: 最强的 1-3 个判断 — 这些可以保留
+- `rewrite_brief`: 给作者的 3-5 句话改稿建议, 不要废话
+
+## 严禁
+
+- 不要在 JSON 外加任何文字、解释、markdown
+- 不要在每个字段值里加 emoji
+- 不要给出"很好"、"还需努力"类空话
+- 不要重复检测器规则能抓的事(禁词、句式), 只看语义层面
+
+---
+
+## 待审稿文章
+
+{ARTICLE}
+"""
+
+
 if __name__ == "__main__":
     # 测试: 输出 analysis 场景的完整 prompt
     print(build_humanize_prompt("analysis"))

@@ -39,6 +39,7 @@ Keep the contract neutral; let plugins format strings inside their own
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -146,14 +147,18 @@ class NgramEngine(Protocol):
     """
 
     code: str
-    available: bool
-    """``True`` if the engine successfully loaded its data files at
-    construction time. Read-only after that."""
-
     corpus_id: str
     """Human-readable identifier of the training corpus, e.g.
     ``"HC3-Chinese-300+300"`` or ``"RAID-en-2024"``. Surfaced in
     ``--version``-style output for reproducibility."""
+
+    @property
+    def available(self) -> bool:
+        """``True`` if the engine successfully loaded its data files at
+        construction time. Read-only — declared as a property here so
+        plugins can implement it as either a plain attribute or a
+        ``@property``; both satisfy the structural type check."""
+        ...
 
     def score(self, text: str) -> NgramScoreResult:
         """Score ``text`` against the n-gram model. If
@@ -181,8 +186,13 @@ class ReplacementsTable(Protocol):
 
     code: str
 
-    def ordered_pairs(self) -> list[tuple[str, str]]:
+    def ordered_pairs(self) -> Sequence[tuple[str, str]]:
         """Return ``(pattern, replacement)`` tuples in apply order.
+
+        Returning ``Sequence`` (rather than ``list``) lets plugins ship
+        an immutable ``tuple[tuple[str, str], ...]`` to advertise that
+        the table is read-only at runtime. Callers must treat the
+        result as covariantly read-only and never mutate it.
 
         ``pattern`` may be a literal string or a regex (the polish
         pipeline uses ``re.sub`` with no flags by default; the plugin

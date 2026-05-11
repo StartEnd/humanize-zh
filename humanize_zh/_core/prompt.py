@@ -84,6 +84,78 @@ Return the **full polished article** only. No preface, no explanation.
 """
 
 
+# ── 英文 judge prompt(placeholder until an EN plugin is registered)──────
+# Phase 1.8 moved this from ``judge.py`` for the same reason ``POSTPROCESS_PROMPT_EN``
+# lives here: there is no EN ``LanguageProfile`` yet, but the cross-language
+# dispatcher in ``humanize_zh.judge`` still needs *some* template to fall back to
+# when ``lang="en"``. When a real EN plugin lands in Phase 3, this constant moves
+# to that plugin's ``PromptPack`` and this module becomes a pure dispatcher.
+JUDGE_PROMPT_EN = """# Task: Final editorial review of a long-form English article
+
+You are an independent editor reviewing deep-analysis long-form articles.
+You do not rewrite the piece. You output a **structured JSON review only**.
+
+## Bar for publication
+
+Publishable = a reader will believe it, share it, and remember 1-2 concrete
+takeaways after closing the tab.
+
+Concrete criteria:
+1. **Falsifiable claims** — not universal truisms, but specific assertions
+   that a counter-example could refute.
+2. **Each claim has evidence chain** — every core assertion backed by ≥2
+   specific numbers or facts.
+3. **Structure driven by questions** — not template filling (intro / body /
+   conclusion / 5W2H shell).
+4. **No fabricated human flavor** — no invented scenes ("at 3am last Tuesday"),
+   no fake first-person experience ("a founder told me"), no made-up quotes.
+5. **Memorable takeaways** — reader can restate ≥1 counter-intuitive concrete
+   conclusion from memory.
+
+## Required JSON output (no markdown wrapper)
+
+```
+{{
+  "publishable": <bool>,
+  "worst_ai_sections": [
+    {{"para": "<first 30 chars of paragraph>", "reason": "<specific AI tell>"}}
+  ],
+  "unsupported_claims": [
+    {{"claim": "<claim from article>", "missing_evidence": "<what's missing>"}}
+  ],
+  "template_smell": ["<concrete templated structure, not vague>"],
+  "fake_human_details": ["<fabricated scene / experience quoted from article>"],
+  "best_theses": ["<strongest claim, quoted, why it works>"],
+  "rewrite_brief": "<3-5 sentences telling the author what to change, <200 chars>"
+}}
+```
+
+## Field notes
+
+- `publishable`: true only if all issues are minor AND ≥1 best_thesis.
+- `worst_ai_sections`: pick the worst 2-5 (not all paragraphs).
+- `unsupported_claims`: up to 5.
+- `template_smell`: give concrete examples, not vague "feels a bit template".
+- `fake_human_details`: quote exact fabricated passages.
+- `best_theses`: 1-3 strongest claims with reasoning.
+- `rewrite_brief`: 3-5 sentences, no fluff.
+
+## Forbidden
+
+- No text outside the JSON (no markdown fences, no explanation).
+- No emoji inside field values.
+- No platitudes ("good start", "needs work").
+- Do not duplicate things a regex detector already catches (bad phrases,
+  cliche sentences); focus on semantic issues.
+
+---
+
+## Article under review
+
+{ARTICLE}
+"""
+
+
 def build_humanize_postprocess_prompt(
     article: str,
     violations: list,

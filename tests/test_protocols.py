@@ -721,3 +721,114 @@ def test_protocol_surface_supports_a_hypothetical_en_plugin(clean_registry) -> N
     assert isinstance(pairs, list) and pairs
     assert "writer_system" in fetched.prompt_pack.writer_system or fetched.prompt_pack.writer_system
     assert fetched.level_labels["LOW"]
+
+
+# ─── Phase 1.8: assembled ZH LanguageProfile ─────────────────────────────
+
+
+def test_zh_profile_singleton_satisfies_language_profile() -> None:
+    """``zh_profile`` must be a fully-wired ``LanguageProfile`` whose
+    component codes all agree (the post-init guard would already raise
+    on import if not, but we want an explicit regression test in case
+    that guard ever weakens)."""
+    from humanize_zh._lang.zh.profile import zh_profile
+    assert isinstance(zh_profile, LanguageProfile)
+    assert zh_profile.code == "zh"
+    assert zh_profile.detector.code == "zh"
+    assert zh_profile.ngram_engine is not None
+    assert zh_profile.ngram_engine.code == "zh"
+    assert zh_profile.replacements.code == "zh"
+    assert zh_profile.prompt_pack.code == "zh"
+
+
+def test_zh_profile_components_runtime_check_against_protocols() -> None:
+    """Structural typing — every component answers ``isinstance`` against
+    its declared protocol. Catches accidental method removal.
+    """
+    from humanize_zh._lang.zh.profile import zh_profile
+    assert isinstance(zh_profile.detector, Detector)
+    assert isinstance(zh_profile.ngram_engine, NgramEngine)
+    assert isinstance(zh_profile.replacements, ReplacementsTable)
+    assert isinstance(zh_profile.prompt_pack, PromptPack)
+
+
+def test_zh_profile_level_labels_match_format_helper() -> None:
+    """The level-label dict on the profile must produce the same strings
+    that :func:`humanize_zh._format.level_label` returns today.
+
+    Phase 2 plans to switch the helper to read from the active profile;
+    if the labels drift before that migration, both call sites will
+    diverge silently. Pin them here.
+    """
+    from humanize_zh._format import level_label
+    from humanize_zh._lang.zh.profile import ZH_LEVEL_LABELS, zh_profile
+
+    # Pick one probability from each band (covering all four cut-offs).
+    samples = {
+        "LOW": 0.0,
+        "MEDIUM": 25.0,
+        "HIGH": 50.0,
+        "VERY_HIGH": 75.0,
+    }
+    for key, prob in samples.items():
+        assert ZH_LEVEL_LABELS[key] == level_label(prob), (
+            f"ZH_LEVEL_LABELS[{key!r}] drifted from _format.level_label({prob})"
+        )
+        assert zh_profile.level_labels[key] == level_label(prob)
+
+
+def test_zh_profile_prompt_pack_carries_existing_zh_templates() -> None:
+    """The PromptPack must wrap the canonical ZH templates, not stubs.
+    A regression here would mean the LLM sees a different prompt after
+    Phase 1.10 wires consumers to the profile."""
+    from humanize_zh._lang.zh.profile import zh_profile
+    from humanize_zh._lang.zh.prompts import (
+        JUDGE_PROMPT,
+        POSTPROCESS_PROMPT,
+        build_humanize_prompt,
+    )
+    assert zh_profile.prompt_pack.writer_user_template is POSTPROCESS_PROMPT
+    assert zh_profile.prompt_pack.judge_user_template is JUDGE_PROMPT
+    # rules_section is a freshly-built string — compare by value.
+    assert zh_profile.prompt_pack.rules_section == build_humanize_prompt(scene="analysis")
+
+
+def test_zh_profile_metadata_exposes_versioning_ids() -> None:
+    """Operators reading ``humanize providers`` (Phase 2) need stable
+    keys to pin calibration drift. Lock the metadata schema here."""
+    from humanize_zh._lang.zh.profile import zh_profile
+    md = zh_profile.metadata
+    assert md["corpus"] == "HC3-Chinese"
+    assert md["rule_set_version"] == zh_profile.detector.version
+    assert md["ngram_corpus_id"] == zh_profile.ngram_engine.corpus_id  # type: ignore[union-attr]
+
+
+def test_make_zh_profile_returns_independent_instances() -> None:
+    """``make_zh_profile()`` must build a fresh profile each call so
+    tests can swap profiles without poisoning the global singleton."""
+    from humanize_zh._lang.zh.profile import make_zh_profile, zh_profile
+    fresh = make_zh_profile()
+    assert fresh is not zh_profile
+    assert fresh.code == zh_profile.code
+    # Component singletons *are* shared (intentional — they cache JSON).
+    assert fresh.detector is zh_profile.detector
+
+
+def test_zh_profile_judge_prompts_relocated_from_judge_module() -> None:
+    """Phase 1.8 moved ``JUDGE_PROMPT`` / ``JUDGE_PROMPT_EN`` out of
+    ``humanize_zh.judge``. Verify the new homes are wired and that the
+    judge module still re-exports them for backward compat.
+    """
+    import importlib
+
+    from humanize_zh._core.prompt import JUDGE_PROMPT_EN as core_en_prompt
+    from humanize_zh._lang.zh.prompts import JUDGE_PROMPT as zh_prompt
+    # NB: ``humanize_zh/__init__.py`` does ``from .judge import judge``
+    # which shadows the submodule on the package namespace. Reach the
+    # module via importlib to get the actual ``ModuleType``.
+    judge_module = importlib.import_module("humanize_zh.judge")
+    assert judge_module.JUDGE_PROMPT is zh_prompt
+    assert judge_module.JUDGE_PROMPT_EN is core_en_prompt
+    # Both prompts must contain the placeholder consumers rely on.
+    assert "{ARTICLE}" in zh_prompt
+    assert "{ARTICLE}" in core_en_prompt
