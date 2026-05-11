@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `humanize_zh.web._security.AbuseControlMiddleware` — opt-in
+  Bearer-token auth and per-IP rolling-window rate limiting. Activate
+  via `HUMANIZE_ZH_WEB_TOKEN` and/or
+  `HUMANIZE_ZH_WEB_RATE_LIMIT_PER_MINUTE`. Default: both off (no
+  behavior change for existing deployments). Auth runs before rate-limit
+  so unauthenticated bursts cannot drain the budget for real users.
+  `/health` always passes through. See `SECURITY.md`.
+- XSS regression tests for `/htmx/detect` and `/htmx/polish` — pin the
+  Jinja2 autoescape contract so a stray `| safe` filter is caught at CI.
 - `humanize_zh._format.level_label()` — single source of truth for the
   `LOW / MEDIUM / HIGH / VERY HIGH` Chinese label mapping used across
   `detect`, `ngram_check`, and `combined`.

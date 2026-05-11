@@ -233,3 +233,143 @@ def test_htmx_judge_returns_report(client: TestClient, ai_article_zh: str, fake_
     assert r.status_code == 200
     # Either rendered the formatted report OR raised judge error; for our fixture it should render.
     assert "可发表" in r.text or "需修改" in r.text
+
+
+# ─── Pass E: XSS / auth / rate-limit ───────────────────────────────────────
+
+
+XSS_PAYLOAD = "<script>alert('pwn')</script>"
+
+
+def test_user_text_is_escaped_in_htmx_detect(client: TestClient) -> None:
+    """Regression: user-submitted text must round-trip through Jinja2 escaping.
+
+    If a future template adds ``| safe`` to the article echo, this test will
+    catch it before the change ships.
+    """
+    article = f"综上所述, 这个产品赋能了所有用户。{XSS_PAYLOAD}" * 2
+    r = client.post("/htmx/detect", data={"text": article})
+    assert r.status_code == 200
+    # Raw <script> tag must NOT appear in the response — that would mean the
+    # browser would execute it. The escaped form is fine.
+    assert "<script>alert" not in r.text
+    if XSS_PAYLOAD in r.text or "&lt;script&gt;" in r.text:
+        # Either fully missing (template doesn't echo input) or escaped — both safe.
+        assert "&lt;script&gt;" in r.text or XSS_PAYLOAD not in r.text
+
+
+def test_user_text_is_escaped_in_htmx_polish(
+    client: TestClient, fake_polish_fn,
+) -> None:
+    """Polish path also must not surface raw user HTML."""
+    llm.use_callable(fake_polish_fn, name="fake-polish", model="v1")
+    article = f"# 标题\n\n{XSS_PAYLOAD}\n\n综上所述, 这个产品赋能了用户。"
+    r = client.post("/htmx/polish", data={"text": article, "scene": "analysis"})
+    assert r.status_code == 200
+    assert "<script>alert" not in r.text
+
+
+# ─── auth (HUMANIZE_ZH_WEB_TOKEN) ─────────────────────────────────────────
+
+
+@pytest.fixture
+def auth_client() -> TestClient:
+    """App with a fixed bearer token; rate limit off."""
+    from humanize_zh.web._security import AbuseControlConfig
+    return TestClient(create_app(abuse_control=AbuseControlConfig(token="s3cret")))
+
+
+def test_auth_health_is_public(auth_client: TestClient) -> None:
+    """``/health`` must remain reachable for liveness probes."""
+    r = auth_client.get("/health")
+    assert r.status_code == 200
+
+
+def test_auth_blocks_unauthenticated_index(auth_client: TestClient) -> None:
+    r = auth_client.get("/")
+    assert r.status_code == 401
+    assert r.headers.get("www-authenticate", "").startswith("Bearer")
+
+
+def test_auth_blocks_wrong_token(auth_client: TestClient) -> None:
+    r = auth_client.get("/", headers={"Authorization": "Bearer wrong"})
+    assert r.status_code == 401
+
+
+def test_auth_accepts_correct_bearer_token(auth_client: TestClient) -> None:
+    r = auth_client.get("/", headers={"Authorization": "Bearer s3cret"})
+    assert r.status_code == 200
+
+
+def test_auth_accepts_query_string_token(auth_client: TestClient) -> None:
+    r = auth_client.get("/?token=s3cret")
+    assert r.status_code == 200
+
+
+def test_auth_blocks_non_bearer_scheme(auth_client: TestClient) -> None:
+    """A bare ``Authorization: s3cret`` (no scheme) must not pass."""
+    r = auth_client.get("/", headers={"Authorization": "s3cret"})
+    assert r.status_code == 401
+
+
+def test_auth_off_when_token_unset() -> None:
+    """No token in env → middleware not attached → no 401 anywhere."""
+    from humanize_zh.web._security import AbuseControlConfig
+    plain = TestClient(create_app(abuse_control=AbuseControlConfig()))
+    assert plain.get("/").status_code == 200
+    assert plain.get("/api/providers").status_code == 200
+
+
+# ─── rate limit (HUMANIZE_ZH_WEB_RATE_LIMIT_PER_MINUTE) ───────────────────
+
+
+def test_rate_limit_returns_429_after_budget() -> None:
+    from humanize_zh.web._security import AbuseControlConfig
+    cfg = AbuseControlConfig(rate_per_minute=3)
+    rl = TestClient(create_app(abuse_control=cfg))
+    # Spend the budget — `/api/providers` is cheap and unauthenticated.
+    for _ in range(3):
+        assert rl.get("/api/providers").status_code == 200
+    blocked = rl.get("/api/providers")
+    assert blocked.status_code == 429
+    assert "Retry-After" in blocked.headers
+    body = blocked.json()
+    assert "rate limit" in body["detail"].lower()
+
+
+def test_rate_limit_does_not_block_health() -> None:
+    """Liveness probes must keep working even when the bucket is exhausted."""
+    from humanize_zh.web._security import AbuseControlConfig
+    cfg = AbuseControlConfig(rate_per_minute=1)
+    rl = TestClient(create_app(abuse_control=cfg))
+    rl.get("/api/providers")  # spends the only credit
+    # Health remains OK — it's in _PUBLIC_PATHS.
+    for _ in range(5):
+        assert rl.get("/health").status_code == 200
+
+
+def test_rate_limit_off_when_unset() -> None:
+    """No env, no middleware — burst freely."""
+    plain = TestClient(create_app())
+    for _ in range(20):
+        assert plain.get("/api/providers").status_code == 200
+
+
+# ─── auth + rate-limit composition ────────────────────────────────────────
+
+
+def test_auth_runs_before_rate_limit() -> None:
+    """An unauthenticated burst should NOT consume the rate-limit budget.
+
+    Otherwise an attacker could exhaust the budget for legitimate users by
+    spamming wrong-token requests. We verify by sending 5 unauthenticated
+    requests with rate=1, then a single authenticated request that must
+    succeed (the bucket should still have its credit).
+    """
+    from humanize_zh.web._security import AbuseControlConfig
+    cfg = AbuseControlConfig(token="t", rate_per_minute=1)
+    c = TestClient(create_app(abuse_control=cfg))
+    for _ in range(5):
+        assert c.get("/").status_code == 401
+    ok = c.get("/", headers={"Authorization": "Bearer t"})
+    assert ok.status_code == 200

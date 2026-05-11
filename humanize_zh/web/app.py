@@ -36,6 +36,7 @@ from ..judge import format_report as format_judge_report
 from ..judge import judge as run_judge
 from ..ngram_check import ngram_score
 from ..postprocess import postprocess_humanize
+from ._security import AbuseControlConfig, AbuseControlMiddleware
 
 logger = logging.getLogger("humanize_zh.web")
 
@@ -71,12 +72,35 @@ def _ensure_provider() -> str | None:
 
 # ─── App factory ────────────────────────────────────────────────────────────
 
-def create_app() -> FastAPI:
+def create_app(
+    *,
+    abuse_control: AbuseControlConfig | None = None,
+) -> FastAPI:
+    """Build the FastAPI app.
+
+    Args:
+        abuse_control: Optional explicit auth / rate-limit config. When
+            ``None`` the config is read from environment variables; tests
+            inject an explicit config to avoid leaking process env into the
+            app instance.
+    """
     app = FastAPI(
         title="humanize-zh",
         description="Chinese AI text humanization — detect / polish / judge",
         version=__version__,
     )
+
+    # Auth + rate-limit middleware — only attached when at least one of the
+    # two env vars is set, so the default deployment is byte-identical to
+    # pre-Pass-E behavior (and existing tests need no changes).
+    cfg = abuse_control if abuse_control is not None else AbuseControlConfig.from_env()
+    if cfg.any_enabled:
+        app.add_middleware(AbuseControlMiddleware, config=cfg)
+        logger.info(
+            "[humanize_zh.web] abuse control: auth=%s rate_limit=%s",
+            cfg.auth_enabled, cfg.rate_per_minute or "off",
+        )
+
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
     @app.get("/health")

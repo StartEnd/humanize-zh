@@ -46,13 +46,35 @@ limited:
 - **Test isolation**: `tests/conftest.py` runs `HUMANIZE_ZH_NO_DOTENV=1`
   to prevent accidental .env loading during local test runs.
 
-## What we don't do (yet)
+## Opt-in abuse controls (Web UI)
 
-- **No auth on the Web UI**. If you deploy it, put nginx + basic auth or
-  an OAuth proxy in front. Tracking issue in `CHANGELOG.md::[Unreleased]`.
-- **No rate limiting on the Web UI**. Every request can trigger an LLM
-  call that costs money. Self-hosted or behind a private network only.
+The Web UI ships with two opt-in middleware controls. Both default to
+**off** so local dev keeps working without ceremony. Activate them by
+setting environment variables before launching:
+
+```bash
+export HUMANIZE_ZH_WEB_TOKEN="<long-random-string>"          # auth on
+export HUMANIZE_ZH_WEB_RATE_LIMIT_PER_MINUTE=60              # 60 req/min/IP
+humanize-zh ui
+```
+
+- **`HUMANIZE_ZH_WEB_TOKEN`** — every route except `/health` requires
+  either an `Authorization: Bearer <token>` header or a `?token=<token>`
+  query parameter. Comparison is constant-time (`hmac.compare_digest`) to
+  defeat timing attacks.
+- **`HUMANIZE_ZH_WEB_RATE_LIMIT_PER_MINUTE`** — rolling 60-second window
+  per client IP, in-memory. Exceed it → `429 Too Many Requests` with a
+  `Retry-After` header. **Per-process** budget — if you run multiple
+  workers, multiply by worker count or front with a real proxy.
+- Auth runs **before** rate-limit, so a flood of unauthenticated requests
+  cannot exhaust the budget for legitimate users.
+
+## What we still don't do
+
 - **No CSP / HSTS headers**. The UI is for local dev / private deploys.
+  Add them at the reverse proxy if you expose it publicly.
+- **No per-user tokens**. The bearer is a shared secret. Rotate via env;
+  there is no DB-backed identity.
 - **No supply-chain pinning** beyond `uv.lock`. Run `uv lock` and review
   the diff if you depend on full deterministic builds.
 
