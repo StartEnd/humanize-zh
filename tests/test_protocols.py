@@ -815,6 +815,68 @@ def test_make_zh_profile_returns_independent_instances() -> None:
     assert fresh.detector is zh_profile.detector
 
 
+# ─── Phase 1.11: package-level auto-registration ────────────────────────
+
+
+def test_humanize_zh_import_auto_registers_zh_profile() -> None:
+    """A bare ``import humanize_zh`` must leave the registry with the
+    built-in ZH profile already accessible via ``get_language("zh")``.
+
+    This is the contract that lets every downstream call site
+    (``judge`` / ``iterative_polish`` / ``humanize providers``) look up
+    a language by code without a manual ``register_language`` call.
+    """
+    import humanize_zh
+    from humanize_zh._lang.zh.profile import zh_profile as canonical
+
+    fetched = humanize_zh.get_language("zh")
+    assert fetched is canonical
+    assert "zh" in humanize_zh.list_languages()
+
+
+def test_humanize_zh_reexports_registry_helpers() -> None:
+    """The package root must surface ``register_language`` /
+    ``get_language`` / ``LanguageProfile`` etc. so downstream EN
+    plugins can register without reaching into the private ``_core``
+    namespace.
+    """
+    import humanize_zh
+
+    expected = {
+        "LanguageProfile",
+        "get_language",
+        "list_languages",
+        "list_profiles",
+        "register_language",
+        "unregister_language",
+        "LanguageAlreadyRegistered",
+        "UnknownLanguage",
+        "zh_profile",
+    }
+    assert expected <= set(humanize_zh.__all__), (
+        f"missing from __all__: {expected - set(humanize_zh.__all__)}"
+    )
+    for name in expected:
+        assert hasattr(humanize_zh, name), f"humanize_zh.{name} missing"
+
+
+def test_humanize_zh_reimport_is_idempotent(clean_registry) -> None:
+    """``importlib.reload`` (or a second registration triggered by some
+    plugin) must not raise — the auto-register block swallows
+    ``LanguageAlreadyRegistered`` deliberately.
+    """
+    import importlib
+
+    import humanize_zh
+    from humanize_zh._lang.zh.profile import zh_profile
+
+    # Pre-populate so the reload-time auto-register hits the swallow path.
+    register_language(zh_profile)
+    importlib.reload(humanize_zh)
+    # Reload re-runs ``__init__.py``; the registry must still hold ZH.
+    assert humanize_zh.get_language("zh").code == "zh"
+
+
 def test_zh_profile_judge_prompts_relocated_from_judge_module() -> None:
     """Phase 1.8 moved ``JUDGE_PROMPT`` / ``JUDGE_PROMPT_EN`` out of
     ``humanize_zh.judge``. Verify the new homes are wired and that the
