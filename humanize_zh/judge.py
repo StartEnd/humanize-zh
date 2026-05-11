@@ -51,11 +51,14 @@ from pathlib import Path
 from . import llm as _llm_module
 
 # Phase 1.8 moved the JUDGE_PROMPT* template strings to their canonical
-# language modules. They are re-imported here so the existing CLI flow
-# (which builds prompts in this module) keeps working unchanged. Phase
-# 1.10 will rewire ``judge()`` to read templates from the active
-# ``LanguageProfile.prompt_pack`` instead of these globals.
+# language modules. They are re-imported here so callers that still
+# reach for ``humanize_zh.judge.JUDGE_PROMPT`` keep working. Phase 1.10
+# rewires the ``judge()`` function below to prefer
+# ``LanguageProfile.prompt_pack.judge_user_template`` whenever a
+# profile is supplied — the constants below remain the no-profile
+# fallback.
 from ._core.prompt import JUDGE_PROMPT_EN
+from ._core.protocols import LanguageProfile
 from ._lang.zh.prompts import JUDGE_PROMPT
 from .llm import (
     LLMError,
@@ -117,6 +120,7 @@ def judge(
     article: str,
     *,
     lang: str = "zh",
+    profile: LanguageProfile | None = None,
     writer_provider: ProviderArg = None,
     judge_provider: ProviderArg = None,
     allow_self_judge: bool = False,
@@ -125,7 +129,15 @@ def judge(
 
     Args:
         article: 待审文章 (原始 markdown)
-        lang: "zh" (默认, 中文 judge prompt) 或 "en" (英文 judge prompt)
+        lang: "zh" (默认, 中文 judge prompt) 或 "en" (英文 judge prompt).
+              若 ``profile`` 同时给出, ``profile.code`` 必须与 ``lang`` 一致,
+              否则视为调用方误传, 直接返回 ``{"_error": ...}``。
+        profile: Phase 1.10 新增 — 可选的
+                 :class:`~humanize_zh._core.protocols.LanguageProfile`. 给出时
+                 使用 ``profile.prompt_pack.judge_user_template`` 而不是
+                 ``lang`` 决定的 module-level 常量, 以便英文等其他语言插件
+                 注册后无需改 judge.py 即可生效。``None`` 时按 ``lang``
+                 选择 ``JUDGE_PROMPT`` / ``JUDGE_PROMPT_EN`` (与 v0.1.0a1 一致)。
         writer_provider: 写作用的 provider (用于防共谋, 仅作标识; 不实际调用).
                          支持: LLMProvider 实例 | str | None
         judge_provider:  评审 provider. 支持: LLMProvider 实例 | str | None
@@ -137,6 +149,13 @@ def judge(
     """
     if lang not in ("zh", "en"):
         return {"_error": f"lang must be 'zh' or 'en', got {lang!r}"}
+    if profile is not None and profile.code != lang:
+        return {
+            "_error": (
+                f"profile.code={profile.code!r} but lang={lang!r}; pass a profile "
+                "matching the requested language or omit one of the two args"
+            )
+        }
 
     # resolve writer (可选, 仅作标识)
     writer_resolved: LLMProvider | None = None
@@ -170,7 +189,10 @@ def judge(
             )
         }
 
-    template = JUDGE_PROMPT_EN if lang == "en" else JUDGE_PROMPT
+    if profile is not None:
+        template = profile.prompt_pack.judge_user_template
+    else:
+        template = JUDGE_PROMPT_EN if lang == "en" else JUDGE_PROMPT
     prompt = template.format(ARTICLE=article)
     logger.info(
         "[humanize_zh.judge] calling %s (lang=%s, prompt %d chars)",

@@ -156,6 +156,40 @@ Concrete criteria:
 """
 
 
+# ── Loop-judge prompt EN(placeholder until an EN plugin is registered)──
+# Phase 1.10 moved this from ``iterative.py``. Same fallback rationale as
+# ``JUDGE_PROMPT_EN`` above: when ``lang="en"`` and no EN ``LanguageProfile``
+# is registered, the dispatcher uses this constant. A real EN plugin will
+# ship its own copy on its ``PromptPack.loop_judge_user_template``.
+LOOP_JUDGE_PROMPT_EN = """You are an AI-text detector. Estimate how likely the
+text below is AI-generated (LLM-written).
+
+Evaluation axes (same family as GPTZero / Originality — transformer perplexity):
+- Sentence uniformity (template-like = AI)
+- Paragraph opener diversity (uniform = AI)
+- Filler density ("It's worth noting", "In conclusion", "needless to say")
+- Abstract vs concrete (more abstract = more AI)
+- Human markers (subjective claim, uncertainty, self-correction, voice)
+
+Input:
+---
+{ARTICLE}
+---
+
+Output strict JSON, no markdown:
+
+{{
+  "ai_score": <int 0-100, 0=human-like, 100=clearly AI>,
+  "tells": [
+    "<concrete sentence/paragraph that looks AI, ≤30 words>"
+  ],
+  "verdict": "<HUMAN_LIKE | BORDERLINE | AI_LIKE>"
+}}
+
+tells: 3-8 entries, must be specific phrases visible in the input.
+"""
+
+
 def build_humanize_postprocess_prompt(
     article: str,
     violations: list,

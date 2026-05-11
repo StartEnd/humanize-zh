@@ -104,6 +104,7 @@ def _make_prompt_pack(code: str = "xx") -> PromptPack:
         writer_user_template="{text}",
         judge_system="judge sys",
         judge_user_template="{text}",
+        loop_judge_user_template="{ARTICLE}",
         rules_section="rules",
     )
 

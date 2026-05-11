@@ -29,6 +29,9 @@ import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from ._core.prompt import LOOP_JUDGE_PROMPT_EN
+from ._core.protocols import LanguageProfile
+from ._lang.zh.prompts import LOOP_JUDGE_PROMPT
 from .detect import Violation, score
 from .judge import _call_llm as _judge_call_llm
 from .judge import _parse_json
@@ -47,67 +50,15 @@ from .prompt import build_humanize_postprocess_prompt
 logger = logging.getLogger(__name__)
 
 
-# ── Loop-specific judge prompt (vs full judge.JUDGE_PROMPT) ─────────────
+# ── Loop-specific judge prompt fallbacks ─────────────────────────────────
 #
-# We don't need the full 7-field审稿 JSON inside a polish loop; we only need:
-#  - ai_score (0-100, like transformer-based detectors estimate)
-#  - tells   : concrete句式/词语/段落 issues to feed next-round polish
-
-_LOOP_JUDGE_PROMPT_ZH = """你是 AI 文本检测员. 评估下面这段中文文章看起来多大概率是 AI(LLM) 生成.
-
-评估维度 (与朱雀 / GPTZero 同源, transformer 困惑度视角):
-- 句式整齐度 (越像模板越像 AI)
-- 段落开头多样性 (越统一越像 AI)
-- 套话密度 (综上所述/赋能/不容忽视/在...背景下/为...提供)
-- 抽象 vs 具体 (越抽象越像 AI)
-- 人味标记 (主观判断/不确定承认/自嘲/口语 — 越缺越像 AI)
-
-输入:
----
-{ARTICLE}
----
-
-严格输出 JSON, 不要 markdown 包裹:
-
-{{
-  "ai_score": <int 0-100, 0=完全人写, 100=完全 AI>,
-  "tells": [
-    "<具体哪一句/哪一段像 AI, 用不超过 30 字描述>"
-  ],
-  "verdict": "<HUMAN_LIKE | BORDERLINE | AI_LIKE>"
-}}
-
-tells 数组至少给 3 条, 最多 8 条. 不要泛泛而谈, 必须是文章里能 grep 到的具体片段.
-"""
-
-
-_LOOP_JUDGE_PROMPT_EN = """You are an AI-text detector. Estimate how likely the
-text below is AI-generated (LLM-written).
-
-Evaluation axes (same family as GPTZero / Originality — transformer perplexity):
-- Sentence uniformity (template-like = AI)
-- Paragraph opener diversity (uniform = AI)
-- Filler density ("It's worth noting", "In conclusion", "needless to say")
-- Abstract vs concrete (more abstract = more AI)
-- Human markers (subjective claim, uncertainty, self-correction, voice)
-
-Input:
----
-{ARTICLE}
----
-
-Output strict JSON, no markdown:
-
-{{
-  "ai_score": <int 0-100, 0=human-like, 100=clearly AI>,
-  "tells": [
-    "<concrete sentence/paragraph that looks AI, ≤30 words>"
-  ],
-  "verdict": "<HUMAN_LIKE | BORDERLINE | AI_LIKE>"
-}}
-
-tells: 3-8 entries, must be specific phrases visible in the input.
-"""
+# Phase 1.10 moved the actual templates to:
+#   - humanize_zh._lang.zh.prompts.LOOP_JUDGE_PROMPT  (zh)
+#   - humanize_zh._core.prompt.LOOP_JUDGE_PROMPT_EN   (en placeholder)
+# These re-bound names preserve the legacy private aliases so internal
+# references and any out-of-tree readers keep resolving.
+_LOOP_JUDGE_PROMPT_ZH = LOOP_JUDGE_PROMPT
+_LOOP_JUDGE_PROMPT_EN = LOOP_JUDGE_PROMPT_EN
 
 
 @dataclass
@@ -156,13 +107,23 @@ def _judge_one_round(
     *,
     judge_provider: LLMProvider,
     lang: str = "zh",
+    profile: LanguageProfile | None = None,
 ) -> tuple[int | None, list[str], Verdict]:
     """Call the lightweight loop-judge prompt and parse.
+
+    When ``profile`` is provided its
+    :attr:`PromptPack.loop_judge_user_template` overrides the
+    ``lang``-keyed module-level fallback. This is the seam Phase 3
+    will use to drop in a real EN profile without touching this
+    function.
 
     Returns:
         (ai_score, tells, verdict). All None / empty on failure.
     """
-    template = _LOOP_JUDGE_PROMPT_EN if lang == "en" else _LOOP_JUDGE_PROMPT_ZH
+    if profile is not None:
+        template = profile.prompt_pack.loop_judge_user_template
+    else:
+        template = _LOOP_JUDGE_PROMPT_EN if lang == "en" else _LOOP_JUDGE_PROMPT_ZH
     prompt = template.format(ARTICLE=text)
     raw = _judge_call_llm(prompt, provider=judge_provider)
     if not raw:
@@ -198,6 +159,7 @@ def iterative_polish(
     target_ai_score: int = 30,
     scene: str = "analysis",
     lang: str = "zh",
+    profile: LanguageProfile | None = None,
     writer_provider: ProviderArg = None,
     judge_provider: ProviderArg = None,
     allow_self_judge: bool = False,
@@ -213,6 +175,11 @@ def iterative_polish(
         rounds: max rounds (recommended 2-4; each round = 2 LLM calls).
         target_ai_score: stop when judge gives ≤ this score.
         scene/lang: passed to writer (postprocess_humanize).
+        profile: Phase 1.10 — optional :class:`LanguageProfile`. When
+                 provided, the inner loop-judge prompt comes from
+                 ``profile.prompt_pack.loop_judge_user_template`` instead
+                 of the ``lang``-keyed module fallback. ``profile.code``
+                 must equal ``lang``. ``None`` keeps v0.1.0a1 behavior.
         writer_provider: who rewrites. None = active.
         judge_provider:  who scores. None = active. Should differ from writer.
         allow_self_judge: bypass collusion check (warning logged).
@@ -224,6 +191,11 @@ def iterative_polish(
         raise ValueError(f"rounds must be ≥ 1, got {rounds}")
     if not 0 <= target_ai_score <= 100:
         raise ValueError(f"target_ai_score must be 0-100, got {target_ai_score}")
+    if profile is not None and profile.code != lang:
+        raise ValueError(
+            f"profile.code={profile.code!r} but lang={lang!r}; pass a profile "
+            "matching the requested language or omit one of the two args"
+        )
 
     writer_resolved = resolve_provider(writer_provider)
     judge_resolved = resolve_provider(judge_provider)
@@ -285,7 +257,7 @@ def iterative_polish(
 
         # Judge
         ai_score_v, tells, verdict = _judge_one_round(
-            polished, judge_provider=judge_resolved, lang=lang,
+            polished, judge_provider=judge_resolved, lang=lang, profile=profile,
         )
         history.append(RoundResult(
             round=r, polished=polished, polished_len=len(polished),

@@ -174,3 +174,64 @@ def test_loop_lang_en_skips_rule_score(ai_article_en: str) -> None:
         ai_article_en, rounds=1, lang="en", allow_self_judge=True,
     )
     assert result.rounds[0].rule_score is None
+
+
+# ─── Phase 1.10: LanguageProfile injection ──────────────────────────────
+
+
+def test_iterative_profile_drives_loop_judge_template(ai_article_zh: str) -> None:
+    """Phase 1.10 — when a profile is supplied, the loop-judge prompt
+    must come from ``profile.prompt_pack.loop_judge_user_template``.
+    """
+    from dataclasses import replace
+
+    from humanize_zh._lang.zh.profile import zh_profile
+
+    captured: list[str] = []
+
+    def _capture_fn(prompt: str) -> str:
+        # Two distinct call types reach this fake: writer prompts (long,
+        # contain "Task:" / "去 AI 味" markers) and judge prompts (start
+        # with the loop_judge template). We only collect the judge ones.
+        if prompt.startswith("LOOP-SENTINEL::"):
+            captured.append(prompt)
+            return json.dumps({"ai_score": 10, "tells": [], "verdict": "HUMAN_LIKE"})
+        # Writer call — return polished placeholder.
+        return "polished"
+
+    custom_pack = replace(
+        zh_profile.prompt_pack,
+        loop_judge_user_template="LOOP-SENTINEL::{ARTICLE}",
+    )
+    custom_profile = replace(zh_profile, prompt_pack=custom_pack)
+
+    llm.use_callable(_capture_fn, name="fakeprov", model="v1")
+    iterative_polish(
+        ai_article_zh,
+        rounds=1,
+        lang="zh",
+        profile=custom_profile,
+        allow_self_judge=True,
+    )
+    assert captured, "loop-judge was never invoked with the sentinel template"
+    assert captured[0].startswith("LOOP-SENTINEL::"), captured[0][:60]
+
+
+def test_iterative_profile_lang_mismatch_raises(ai_article_zh: str) -> None:
+    """``profile.code != lang`` must raise ``ValueError`` early — the
+    iterative loop has no graceful in-band error channel like ``judge()``.
+    """
+    import pytest
+
+    from humanize_zh._lang.zh.profile import zh_profile
+
+    fn = _make_loop_judge_fn([20])
+    llm.use_callable(fn, name="fakeprov", model="v1")
+    with pytest.raises(ValueError, match="profile.code='zh'"):
+        iterative_polish(
+            ai_article_zh,
+            rounds=1,
+            lang="en",
+            profile=zh_profile,
+            allow_self_judge=True,
+        )

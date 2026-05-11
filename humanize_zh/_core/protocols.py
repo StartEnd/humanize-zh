@@ -217,8 +217,11 @@ class PromptPack:
 
     - ``writer_user_template`` placeholders: ``{text}``, ``{scene}``,
       ``{violations}``, ``{aggressive_block}``.
-    - ``judge_user_template`` placeholders: ``{text}``,
-      ``{rules_summary}``.
+    - ``judge_user_template`` placeholders: ``{ARTICLE}`` (full editorial
+      review prompt — produces a 7-field JSON verdict).
+    - ``loop_judge_user_template`` placeholders: ``{ARTICLE}`` (the
+      lightweight judge prompt used inside ``iterative_polish`` — emits
+      ``ai_score`` / ``tells`` / ``verdict`` only, no full review).
     """
 
     code: str
@@ -226,6 +229,12 @@ class PromptPack:
     writer_user_template: str
     judge_system: str
     judge_user_template: str
+    loop_judge_user_template: str
+    """Lightweight judge prompt used by :func:`humanize_zh.iterative.iterative_polish`.
+    Distinct from :attr:`judge_user_template` because the iterative loop
+    only needs ``ai_score``/``tells``/``verdict`` JSON, not the full
+    7-field editorial review."""
+
     rules_section: str
     """Standalone rules block that callers can inject into a custom
     writing prompt (see ``examples/04_inject_rules_into_prompt.py``)."""

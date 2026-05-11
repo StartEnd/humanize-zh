@@ -32,6 +32,7 @@ from .detector import zh_detector
 from .ngram import zh_ngram
 from .prompts import (
     JUDGE_PROMPT,
+    LOOP_JUDGE_PROMPT,
     POSTPROCESS_PROMPT,
     build_humanize_prompt,
 )
@@ -88,6 +89,7 @@ def _build_zh_prompt_pack() -> PromptPack:
         writer_user_template=POSTPROCESS_PROMPT,
         judge_system="",
         judge_user_template=JUDGE_PROMPT,
+        loop_judge_user_template=LOOP_JUDGE_PROMPT,
         rules_section=build_humanize_prompt(scene="analysis"),
     )
 

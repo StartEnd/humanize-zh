@@ -397,6 +397,39 @@ JUDGE_PROMPT = """# 任务: 给一篇网站分析文章做终审编辑审稿
 """
 
 
+# ── Loop-judge prompt(用于 ``iterative_polish``)─────────────────────────
+# Phase 1.10 moved this from ``iterative.py`` so the entire ZH judge
+# prompt surface lives in one module. Distinct from ``JUDGE_PROMPT``:
+# the iterative loop only needs ``ai_score`` / ``tells`` / ``verdict``,
+# not the full 7-field editorial review.
+LOOP_JUDGE_PROMPT = """你是 AI 文本检测员. 评估下面这段中文文章看起来多大概率是 AI(LLM) 生成.
+
+评估维度 (与朱雀 / GPTZero 同源, transformer 困惑度视角):
+- 句式整齐度 (越像模板越像 AI)
+- 段落开头多样性 (越统一越像 AI)
+- 套话密度 (综上所述/赋能/不容忽视/在...背景下/为...提供)
+- 抽象 vs 具体 (越抽象越像 AI)
+- 人味标记 (主观判断/不确定承认/自嘲/口语 — 越缺越像 AI)
+
+输入:
+---
+{ARTICLE}
+---
+
+严格输出 JSON, 不要 markdown 包裹:
+
+{{
+  "ai_score": <int 0-100, 0=完全人写, 100=完全 AI>,
+  "tells": [
+    "<具体哪一句/哪一段像 AI, 用不超过 30 字描述>"
+  ],
+  "verdict": "<HUMAN_LIKE | BORDERLINE | AI_LIKE>"
+}}
+
+tells 数组至少给 3 条, 最多 8 条. 不要泛泛而谈, 必须是文章里能 grep 到的具体片段.
+"""
+
+
 if __name__ == "__main__":
     # 测试: 输出 analysis 场景的完整 prompt
     print(build_humanize_prompt("analysis"))
