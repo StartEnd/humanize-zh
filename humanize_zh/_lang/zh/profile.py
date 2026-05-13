@@ -83,6 +83,39 @@ def _build_zh_prompt_pack() -> PromptPack:
       is what every example and CLI flow uses today. Callers needing a
       different scene can build it on the fly via :func:`build_humanize_prompt`.
     """
+    # Why ``writer_prompt_builder`` is wired up:
+    #
+    # The ZH writer template carries three placeholders (``{ARTICLE}``,
+    # ``{VIOLATIONS}``, ``{HUMANIZE_RULES}``) plus an aggressive-mode
+    # alternate template. ``humanize_core.postprocess`` (P2.5+) only
+    # knows how to do naive ``str.format(ARTICLE=...)``, so without an
+    # explicit builder it raises ``KeyError: 'VIOLATIONS'``. The
+    # builder hook lets plugins own full assembly. We delegate to the
+    # ZH-internal :func:`build_humanize_postprocess_prompt` that lives
+    # in ``humanize_zh.prompt`` (it dispatches between standard /
+    # aggressive templates and injects the scene-specific rules block).
+    #
+    # Imported lazily inside this factory function to avoid
+    # ``humanize_zh.prompt`` → ``humanize_zh._lang.zh.profile`` at
+    # import time (``humanize_zh.prompt`` re-exports names from this
+    # module's ZH templates).
+    from ...prompt import build_humanize_postprocess_prompt
+
+    def _zh_writer_prompt_builder(
+        *,
+        article: str,
+        violations: list,
+        scene: str,
+        aggressive: bool,
+    ) -> str:
+        return build_humanize_postprocess_prompt(
+            article,
+            violations,
+            scene=scene,
+            lang="zh",
+            aggressive=aggressive,
+        )
+
     return PromptPack(
         code="zh",
         writer_system="",
@@ -91,6 +124,7 @@ def _build_zh_prompt_pack() -> PromptPack:
         judge_user_template=JUDGE_PROMPT,
         loop_judge_user_template=LOOP_JUDGE_PROMPT,
         rules_section=build_humanize_prompt(scene="analysis"),
+        writer_prompt_builder=_zh_writer_prompt_builder,
     )
 
 

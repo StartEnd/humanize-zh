@@ -1,40 +1,45 @@
-"""humanize_zh._format — shared formatting helpers for score reporting.
+"""humanize_zh._format — backward-compat ZH label wrapper.
 
-Three modules (``detect`` / ``ngram_check`` / ``combined``) used to carry
-identical copies of the ``_level()`` Chinese label mapping. Any drift between
-them — e.g. a tweaked threshold — would surface as inconsistent ``LOW`` /
-``HIGH`` labels for the same numeric probability. This module is the single
-source of truth.
+P2.8a moved the band-cutoff logic into :mod:`humanize_core._format`,
+which exposes ``level_key`` (raw band id) and a labels-aware
+``level_label(prob, labels)``. This module preserves the historical
+zero-arg ``level_label(prob)`` API used internally by the ZH plugin
+and by older tests by binding the labels argument to
+:data:`humanize_zh._lang.zh.profile.ZH_LEVEL_LABELS`.
 
-Calibration source: HC3-Chinese 300+300 human/AI samples (see ``_meta`` in
-``patterns.json``).
+The labels themselves live on :attr:`LanguageProfile.level_labels` for
+the ZH profile, so we go through the profile-owned dict (single source
+of truth) instead of redefining the strings here.
 """
 from __future__ import annotations
 
+from humanize_core._format import LEVEL_KEYS, level_key
+from humanize_core._format import level_label as _core_level_label
+
+# We *re-declare* the ZH labels here rather than importing from
+# ``humanize_zh._lang.zh.profile`` to avoid a circular import: the ZH
+# detector imports ``level_label`` from this module, and the profile
+# itself imports the detector. ``profile.py`` keeps its own copy as the
+# authoritative source on ``LanguageProfile.level_labels``; both
+# tables must stay in sync. There is a regression test in
+# ``tests/test_protocols.py::test_zh_format_labels_match_profile`` that
+# enforces equality so any future drift is caught immediately.
+_ZH_LEVEL_LABELS = {
+    "LOW": "LOW (基本像人写的)",
+    "MEDIUM": "MEDIUM (有些 AI 痕迹)",
+    "HIGH": "HIGH (大概率 AI 生成)",
+    "VERY_HIGH": "VERY HIGH (几乎确定是 AI)",
+}
+
 
 def level_label(prob: float) -> str:
-    """Map a 0-100 AI-probability score to a human-readable Chinese label.
+    """Map a 0-100 AI-probability score to the localized ZH label.
 
-    Thresholds (inclusive of lower bound):
-        - ``[0, 25)``  → ``LOW (基本像人写的)``
-        - ``[25, 50)`` → ``MEDIUM (有些 AI 痕迹)``
-        - ``[50, 75)`` → ``HIGH (大概率 AI 生成)``
-        - ``[75, 100]`` → ``VERY HIGH (几乎确定是 AI)``
-
-    Args:
-        prob: AI probability in the range ``[0, 100]``. Values outside the
-            range are clamped to the nearest band (no exception).
-
-    Returns:
-        Localized Chinese label string ready for CLI / Web rendering.
+    Thin shim over :func:`humanize_core._format.level_label` with the
+    label dict bound to the ZH labels above. The band cut-offs
+    ([0,25), [25,50), [50,75), [75,100]) are owned by ``humanize_core``.
     """
-    if prob < 25:
-        return "LOW (基本像人写的)"
-    if prob < 50:
-        return "MEDIUM (有些 AI 痕迹)"
-    if prob < 75:
-        return "HIGH (大概率 AI 生成)"
-    return "VERY HIGH (几乎确定是 AI)"
+    return _core_level_label(prob, _ZH_LEVEL_LABELS)
 
 
-__all__ = ["level_label"]
+__all__ = ["level_label", "level_key", "LEVEL_KEYS"]

@@ -5,9 +5,106 @@ All notable changes to **humanize-zh** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0a1] — Phase 2: package extraction (humanize-core split)
+
+### Changed (high-level)
+
+This release completes the multi-language refactor's **Phase 2**:
+the framework code (protocols, registry, postprocess/judge/iterative
+dispatchers, LLM provider abstractions, web middleware) moved to a
+new sibling package, **`humanize-core`**. `humanize-zh` is now a
+thin language plugin layered on top of it via the
+`humanize_core.languages` entry-point.
+
+The user-visible API is **byte-identical to v0.1.0a1**: every public
+import (`from humanize_zh import score, postprocess_humanize, judge,
+iterative_polish, ...`) still works, every CLI flag and Web UI route
+behaves the same, and all 288 tests pass unchanged. The change is
+purely structural — installing `humanize-zh` now also installs
+`humanize-core>=0.1.0a1` as a dependency, and the registry
+auto-discovers the ZH profile on first use.
 
 ### Added
+
+- New runtime dependency: **`humanize-core>=0.1.0a1`** (declared in
+  `pyproject.toml`). `humanize-zh[openai|anthropic|ui]` extras forward
+  to the matching `humanize-core[*]` extras so users still get a
+  one-line install.
+- Entry-point auto-registration: `humanize-zh` advertises
+  `zh = humanize_zh._lang.zh.profile:zh_profile` under the
+  `humanize_core.languages` group. Importing `humanize_zh` is no
+  longer required for `humanize_core.get_language("zh")` to work —
+  the framework discovers the plugin lazily.
+- `humanize_zh.web._security.AbuseControlConfig.from_env` accepts both
+  the legacy `HUMANIZE_ZH_WEB_TOKEN` /
+  `HUMANIZE_ZH_WEB_RATE_LIMIT_PER_MINUTE` env vars **and** the
+  canonical `HUMANIZE_CORE_WEB_*` names. Legacy names take
+  precedence so existing deployments keep working.
+- ZH `PromptPack.writer_prompt_builder` is now wired to
+  `build_humanize_postprocess_prompt`, so the framework's polish
+  dispatcher routes through ZH's rule-list / aggressive-mode
+  assembler instead of naive `str.format(ARTICLE=...)`.
+
+### Changed (per-module)
+
+The following modules became **thin shims** over `humanize_core`.
+Public API unchanged; line counts are post-shrink.
+
+| Module | Pre-shrink | Post-shrink | Notes |
+|---|---|---|---|
+| `humanize_zh._core/` | full package | sys.modules alias to `humanize_core` | preserves `humanize_zh._core.{language_registry,protocols,prompt}` import paths |
+| `humanize_zh._format` | local impl | re-export from `humanize_core._format` | |
+| `humanize_zh.llm.*` | full impl | re-export from `humanize_core.llm` | |
+| `humanize_zh.detect` | full impl | shim | delegates to `humanize_core.detect` + `zh_profile` |
+| `humanize_zh.combined` | full impl | shim | |
+| `humanize_zh.ngram_check` | full impl | shim | |
+| `humanize_zh.prompt` | full impl | shim + ZH `build_humanize_postprocess_prompt` dispatcher | |
+| `humanize_zh.postprocess` | 375 LOC | 185 LOC | wraps `humanize_core.postprocess.postprocess_humanize` with `lang="zh"` default; preserves `replacements=` injection via `_ZhCodeReplacementsAdapter` |
+| `humanize_zh.judge` | 290 LOC | 232 LOC | delegates `judge()` to humanize-core; keeps a ZH-localized `format_report` so output stays Chinese |
+| `humanize_zh.iterative` | 230 LOC | 123 LOC | re-exports `IterativeResult` / `RoundResult` / `Verdict` from core; wraps `_judge_one_round` with `profile=zh_profile` default |
+| `humanize_zh.web._security` | 174 LOC | 84 LOC | inherits `AbuseControlConfig` from core; only overrides `from_env` for env-var aliasing |
+
+### Notably **not** collapsed (and why)
+
+- `humanize_zh.cli/` and `humanize_zh.web/app.py` stay ZH-specialized.
+  The substantive operations (detect/postprocess/judge) flow through
+  the shims into `humanize_core`, so there's no remaining duplicate
+  *logic* — only the presentation layer (Chinese strings, ZH-only
+  routes, ZH templates) lives here, which is exactly where
+  plugin-localized UX belongs.
+
+### Fixed
+
+- `humanize_core.postprocess._build_writer_prompt` now substitutes
+  `{ARTICLE}` / `{text}` / `{scene}` / `{violations}` /
+  `{aggressive_block}` only where present in the template, instead
+  of failing with `KeyError` when a `PromptPack` uses a strict subset
+  of placeholders. Matches the contract documented on
+  `humanize_core.PromptPack`.
+
+### Migration notes for v0.1.0a1 users
+
+- **No code changes required.** Every import path used by the
+  v0.1.0a1 README and examples still resolves. Even legacy private
+  imports (`humanize_zh._core.language_registry`,
+  `humanize_zh.judge._call_llm`, etc.) are kept as re-exports for
+  out-of-tree readers.
+- **`pip install humanize-zh==0.2.0a1`** will pull `humanize-core` as a
+  transitive dependency. Users who don't want the framework dep
+  shouldn't upgrade.
+- **Web env vars**: both `HUMANIZE_ZH_WEB_TOKEN` and
+  `HUMANIZE_CORE_WEB_TOKEN` are honored. New deployments should
+  prefer the `HUMANIZE_CORE_*` names because they work regardless
+  of which language plugin is installed.
+
+### Background — Phase 1 (also shipped in this release)
+
+The internal-only Phase-1 scaffold (the protocol layer, ZH plugin
+extraction, registry-aware tests) was completed but never tagged on
+its own; it ships as part of `0.2.0a1` together with Phase 2. The
+Phase-1 highlights below are reproduced for completeness; the
+substantive listing (`### Changed`, `### Fixed`) above already
+covers everything new in `0.2.0a1`.
 
 - **Multi-language plugin scaffold (Phase 1)** — internal architecture
   refactor preparing the ground for a `humanize-en` sibling package.

@@ -42,8 +42,10 @@ from humanize_zh._core.protocols import (
 )
 from humanize_zh.llm.callable_provider import CallableProvider
 
-# Re-use the registry snapshot fixture from test_protocols.py.
-from tests.test_protocols import clean_registry  # noqa: F401
+# ``clean_registry`` is auto-discovered from ``tests/conftest.py``
+# (P2.8: moved out of ``test_protocols.py`` because the editable install
+# of humanize-core puts its own ``tests/`` package on ``sys.path`` and
+# shadows ours when resolving ``from tests.test_protocols import ...``).
 
 # ─── Concrete duck-typed result dataclasses ─────────────────────────────
 #
@@ -305,7 +307,13 @@ def test_en_iterative_polish_uses_profile_loop_judge(
     )
     assert captured, "loop judge was not invoked through the EN profile"
     assert captured[0].startswith("EN-LOOP-JUDGE-V0::")
-    assert result.rounds[0].rule_score is None  # lang=en skips local rule score
+    # P2.8c note: humanize-core's iterative loop now scores every round
+    # with ``profile.detector.score`` whenever a profile is registered
+    # — the earlier ``lang != "zh"`` gate was plugin-unaware and hid
+    # useful signal when an EN plugin ships a working detector. The
+    # EN dry-run profile wires in ``_EnDetector`` (returns 0.0 for
+    # "polished" strings), so we now expect a numeric ``rule_score``.
+    assert result.rounds[0].rule_score == 0.0
 
 
 def test_en_postprocess_uses_profile_replacements(

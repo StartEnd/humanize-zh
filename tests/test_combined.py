@@ -58,11 +58,21 @@ def test_high_rule_wins_when_ngram_low() -> None:
 
 
 def test_combined_falls_back_to_rule_when_ngram_engine_fails() -> None:
-    """If ngram_score raises, combined_score still returns a valid object."""
-    def _broken_ngram(*_args, **_kwargs):
+    """If the ngram engine raises, combined_score still returns a valid object.
+
+    P2.8b note: the combined pipeline now flows through
+    ``profile.ngram_engine.score`` rather than the module-level
+    ``humanize_zh.ngram_check.ngram_score`` shim, so we patch the
+    engine method directly. Patching the shim no longer intercepts
+    the call path because the framework dispatcher reaches the engine
+    through :class:`LanguageProfile`.
+    """
+    from humanize_zh._lang.zh.ngram import ZhNgramEngine
+
+    def _broken_score(self, *_args, **_kwargs):
         raise RuntimeError("simulated engine crash")
 
-    with patch("humanize_zh.ngram_check.ngram_score", _broken_ngram):
+    with patch.object(ZhNgramEngine, "score", _broken_score):
         cs = combined_score("综上所述, 这个产品赋能了所有用户。")
     assert cs.ngram_available is False
     assert "error" in cs.ngram_metrics
@@ -93,8 +103,17 @@ def test_empty_text_does_not_raise() -> None:
 
 
 def test_str_renders_three_layers() -> None:
+    """``__str__`` shows all three layers in a single block.
+
+    P2.8b note: the canonical ``__str__`` lives on
+    :class:`humanize_core.combined.CombinedScore` and renders English
+    headers (``"AI probability"``) so the same class works for every
+    language. The legacy ZH-only ``"综合 AI 概率"`` heading is
+    intentionally retired — formatted output is the responsibility of
+    the CLI / Web layer, not the dataclass.
+    """
     cs = combined_score("综上所述, 这个产品赋能了所有用户。" * 3)
     rendered = str(cs)
-    assert "综合 AI 概率" in rendered
+    assert "AI probability" in rendered
     assert "rule:" in rendered
     assert "ngram:" in rendered

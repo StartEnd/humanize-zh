@@ -127,3 +127,44 @@ def repo_root() -> Path:
 @pytest.fixture
 def site_digester_root() -> Path:
     return SITE_DIGESTER_ROOT
+
+
+# ─── Registry snapshot fixture (moved from tests/test_protocols.py) ─────────
+#
+# Lives here, not in test_protocols.py, so pytest's directory-based fixture
+# scanner picks it up by name without anyone needing
+# ``from tests.test_protocols import clean_registry``. The latter import
+# regressed in P2.8 when humanize-core's editable install added its own
+# ``tests/`` package (with ``__init__.py``) to ``sys.path``, shadowing
+# humanize-zh's tests directory whenever Python resolved ``tests.*``.
+
+@pytest.fixture
+def clean_registry():
+    """Drop existing registry state, restore on teardown.
+
+    We can't naively ``reset_for_tests()`` at teardown because
+    ``humanize_zh`` auto-registers ``zh`` on import (post-Phase-1.11),
+    so we snapshot first and restore on teardown.
+
+    Additionally we force ``_DISCOVERY_DONE = True`` after the reset.
+    Without this, the next ``get_language`` / ``list_languages`` call
+    triggers entry-point auto-discovery (declared by P2.8 in
+    ``pyproject.toml`` under ``humanize_core.languages.zh``), which
+    silently re-registers ZH and breaks tests that assert "registry is
+    empty here". Tests that explicitly want to exercise discovery
+    should flip the flag back to ``False`` themselves.
+    """
+    from humanize_zh._core import language_registry as reg
+    from humanize_zh._core.language_registry import reset_for_tests
+
+    with reg._LOCK:
+        snapshot = dict(reg._PROFILES)
+        snapshot_done = reg._DISCOVERY_DONE
+    reset_for_tests()
+    with reg._LOCK:
+        reg._DISCOVERY_DONE = True
+    yield
+    reset_for_tests()
+    with reg._LOCK:
+        reg._PROFILES.update(snapshot)
+        reg._DISCOVERY_DONE = snapshot_done

@@ -1,155 +1,59 @@
-"""humanize_zh.iterative — 迭代闭环改写 (writer + judge 多轮 ping-pong)
+"""humanize_zh.iterative — ZH-defaulted thin shim over :mod:`humanize_core.iterative`.
 
-为什么需要这个?
-================
+P2.8c collapses the writer/judge ping-pong loop onto humanize-core.
+The public API preserves the v0.1.0a1 calling convention:
 
-单轮 LLM polish 对第三方检测器 (朱雀/Originality) 效果有限, 因为:
+    from humanize_zh import iterative_polish
+    result = iterative_polish(article, rounds=3, target_ai_score=30)
 
-1. 我们的 rule + ngram 评分跟 transformer 困惑度不在同一信号源 — 我们说"21 分像
-   人写的", 朱雀仍报 73% AI.
-2. LLM 一次重写的"力度"由 prompt 决定, 但 LLM 倾向保守, 一次改不彻底.
+so callers keep working without change. The only behavioral difference
+is that ``lang="zh"`` is now the default — pass ``lang="en"`` (or an
+EN ``profile=``) to exercise the framework's EN path.
 
-迭代闭环的思路:
-
-    Round N: writer 重写 → judge 给 0-100 AI 分 + 具体 tells
-    Round N+1: 拿 N 轮 tells 当 violations, 让 writer 再改
-
-每一轮 judge 不只是分数, 还输出"具体哪些段落像 AI / 缺什么人味" — 下一轮 polish
-有针对性, 而不是盲改.
-
-防 collusion:
-
-writer 和 judge 默认必须不同 provider (例: writer=deepseek, judge=hunyuan/qwen).
-若用户只配了一个 provider, 强制要求 ``allow_self_judge=True`` 才放行 (会在
-返回 history 里 mark warning).
+Dataclasses (:class:`RoundResult`, :class:`IterativeResult`) are
+re-exported from humanize-core unchanged; tests that introspect their
+fields keep working.
 """
+
 from __future__ import annotations
 
-import logging
-from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
-
-from ._core.prompt import LOOP_JUDGE_PROMPT_EN
-from ._core.protocols import LanguageProfile
-from ._lang.zh.prompts import LOOP_JUDGE_PROMPT
-from .detect import Violation, score
-from .judge import _call_llm as _judge_call_llm
-from .judge import _parse_json
-from .llm import (
-    LLMError,
-    LLMNotConfiguredError,
-    LLMProvider,
-    ProviderArg,
-    provider_id,
-    resolve_provider,
+from humanize_core.iterative import (
+    IterativeResult,
+    RoundResult,
+    Verdict,
+    _build_round_violations,  # noqa: F401  (legacy re-export for tests)
 )
-from .postprocess import _call_llm as _writer_call_llm
-from .postprocess import postprocess_humanize
-from .prompt import build_humanize_postprocess_prompt
+from humanize_core.iterative import _judge_one_round as _core_judge_one_round
+from humanize_core.iterative import iterative_polish as _core_iterative_polish
 
-logger = logging.getLogger(__name__)
-
-
-# ── Loop-specific judge prompt fallbacks ─────────────────────────────────
-#
-# Phase 1.10 moved the actual templates to:
-#   - humanize_zh._lang.zh.prompts.LOOP_JUDGE_PROMPT  (zh)
-#   - humanize_zh._core.prompt.LOOP_JUDGE_PROMPT_EN   (en placeholder)
-# These re-bound names preserve the legacy private aliases so internal
-# references and any out-of-tree readers keep resolving.
-_LOOP_JUDGE_PROMPT_ZH = LOOP_JUDGE_PROMPT
-_LOOP_JUDGE_PROMPT_EN = LOOP_JUDGE_PROMPT_EN
-
-
-@dataclass
-class RoundResult:
-    """Outcome of a single polish + judge round."""
-
-    round: int  # 1-indexed
-    polished: str
-    polished_len: int
-    rule_score: float | None  # our local rule probability (zh only)
-    ai_score: int | None  # judge's 0-100 AI probability
-    verdict: Literal["HUMAN_LIKE", "BORDERLINE", "AI_LIKE", "UNKNOWN"]
-    tells: list[str] = field(default_factory=list)
-    error: str | None = None
-
-
-@dataclass
-class IterativeResult:
-    """Bundled outcome of an iterative_polish() invocation."""
-
-    final_text: str
-    rounds: list[RoundResult]
-    writer_provider: str | None
-    judge_provider: str | None
-    target_ai_score: int
-    stopped_reason: Literal["target_reached", "rounds_exhausted", "judge_failed"]
-    self_judge: bool  # True if writer == judge (collusion warning)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "final_text": self.final_text,
-            "rounds": [asdict(r) for r in self.rounds],
-            "writer_provider": self.writer_provider,
-            "judge_provider": self.judge_provider,
-            "target_ai_score": self.target_ai_score,
-            "stopped_reason": self.stopped_reason,
-            "self_judge": self.self_judge,
-        }
-
-
-Verdict = Literal["HUMAN_LIKE", "BORDERLINE", "AI_LIKE", "UNKNOWN"]
+from ._core.protocols import LanguageProfile
+from ._lang.zh.profile import zh_profile
+from ._lang.zh.prompts import LOOP_JUDGE_PROMPT  # noqa: F401  (legacy re-export)
+from .llm import LLMProvider, ProviderArg, provider_id  # noqa: F401  (legacy re-export)
+from .prompt import LOOP_JUDGE_PROMPT_EN  # noqa: F401  (legacy re-export)
 
 
 def _judge_one_round(
     text: str,
     *,
     judge_provider: LLMProvider,
-    lang: str = "zh",
     profile: LanguageProfile | None = None,
 ) -> tuple[int | None, list[str], Verdict]:
-    """Call the lightweight loop-judge prompt and parse.
+    """Run one judge round; defaults ``profile=zh_profile``.
 
-    When ``profile`` is provided its
-    :attr:`PromptPack.loop_judge_user_template` overrides the
-    ``lang``-keyed module-level fallback. This is the seam Phase 3
-    will use to drop in a real EN profile without touching this
-    function.
-
-    Returns:
-        (ai_score, tells, verdict). All None / empty on failure.
+    Thin wrapper over :func:`humanize_core.iterative._judge_one_round`.
+    The framework function requires ``profile=`` as an explicit
+    keyword argument (it cannot assume a default language). Legacy ZH
+    callers that invoked ``_judge_one_round("text", judge_provider=p)``
+    pre-P2.8c did not know about the ``profile=`` parameter at all,
+    so this shim defaults it to :data:`zh_profile` — preserving the
+    exact call site shape that ZH unit tests exercise.
     """
-    if profile is not None:
-        template = profile.prompt_pack.loop_judge_user_template
-    else:
-        template = _LOOP_JUDGE_PROMPT_EN if lang == "en" else _LOOP_JUDGE_PROMPT_ZH
-    prompt = template.format(ARTICLE=text)
-    raw = _judge_call_llm(prompt, provider=judge_provider)
-    if not raw:
-        return None, [], "UNKNOWN"
-
-    parsed = _parse_json(raw)
-    if "_parse_error" in parsed:
-        logger.warning("[iterative] judge json parse failed: %s", parsed["_parse_error"])
-        return None, [], "UNKNOWN"
-
-    raw_score = parsed.get("ai_score")
-    score_v: int | None = (
-        max(0, min(100, int(raw_score))) if isinstance(raw_score, (int, float)) else None
+    return _core_judge_one_round(
+        text,
+        judge_provider=judge_provider,
+        profile=zh_profile if profile is None else profile,
     )
-
-    tells_raw = parsed.get("tells") or []
-    tells: list[str] = (
-        [str(t)[:200] for t in tells_raw if t] if isinstance(tells_raw, list) else []
-    )
-
-    raw_verdict = parsed.get("verdict")
-    verdict: Verdict = (
-        raw_verdict if raw_verdict in ("HUMAN_LIKE", "BORDERLINE", "AI_LIKE") else "UNKNOWN"
-    )
-
-    return score_v, tells, verdict
 
 
 def iterative_polish(
@@ -164,132 +68,56 @@ def iterative_polish(
     judge_provider: ProviderArg = None,
     allow_self_judge: bool = False,
 ) -> IterativeResult:
-    """Run a closed-loop polish: each round writer rewrites, judge scores.
+    """Closed-loop polish — each round writer rewrites, judge scores.
 
-    The loop stops early when ``judge ai_score <= target_ai_score`` or when
-    ``rounds`` is exhausted. Each round's rewrite is informed by the previous
-    round's tells, so polishing becomes increasingly targeted.
+    Thin wrapper over :func:`humanize_core.iterative.iterative_polish`
+    with ``lang="zh"`` as the backward-compat default. All other
+    arguments forward verbatim.
+
+    Loop termination (inherited from the framework):
+
+    - ``judge.ai_score <= target_ai_score`` — reached the bar.
+    - ``rounds`` exhausted.
+    - Judge call fails (the failure is captured as ``stopped_reason``
+      and surfaced on the ``RoundResult.error`` field).
 
     Args:
-        article: source text.
-        rounds: max rounds (recommended 2-4; each round = 2 LLM calls).
-        target_ai_score: stop when judge gives ≤ this score.
-        scene/lang: passed to writer (postprocess_humanize).
-        profile: Phase 1.10 — optional :class:`LanguageProfile`. When
-                 provided, the inner loop-judge prompt comes from
-                 ``profile.prompt_pack.loop_judge_user_template`` instead
-                 of the ``lang``-keyed module fallback. ``profile.code``
-                 must equal ``lang``. ``None`` keeps v0.1.0a1 behavior.
-        writer_provider: who rewrites. None = active.
-        judge_provider:  who scores. None = active. Should differ from writer.
-        allow_self_judge: bypass collusion check (warning logged).
+        article: Source markdown.
+        rounds: Maximum number of writer/judge passes.
+        target_ai_score: Early-exit threshold on the judge's 0-100 AI
+            probability. ``<=`` wins.
+        scene: ZH rule-list scene forwarded to the writer prompt.
+        lang: ``"zh"`` (default) or ``"en"``. Ignored when ``profile``
+            is given.
+        profile: Pre-resolved :class:`LanguageProfile`. Takes priority
+            over ``lang=``.
+        writer_provider: LLM provider for the polish call.
+        judge_provider: LLM provider for the judge call. Must differ
+            from ``writer_provider`` unless ``allow_self_judge=True``.
+        allow_self_judge: Override the collusion check.
 
     Returns:
-        IterativeResult with rounds list, final text, stop reason, etc.
+        :class:`IterativeResult` with all rounds' polished texts,
+        scores, verdicts, and a ``stopped_reason`` tag.
     """
-    if rounds < 1:
-        raise ValueError(f"rounds must be ≥ 1, got {rounds}")
-    if not 0 <= target_ai_score <= 100:
-        raise ValueError(f"target_ai_score must be 0-100, got {target_ai_score}")
-    if profile is not None and profile.code != lang:
-        raise ValueError(
-            f"profile.code={profile.code!r} but lang={lang!r}; pass a profile "
-            "matching the requested language or omit one of the two args"
-        )
-
-    writer_resolved = resolve_provider(writer_provider)
-    judge_resolved = resolve_provider(judge_provider)
-    writer_id = provider_id(writer_resolved)
-    judge_id = provider_id(judge_resolved)
-    self_judge = writer_id == judge_id and writer_id is not None
-    if self_judge and not allow_self_judge:
-        raise ValueError(
-            f"writer and judge are both {writer_id}. Collusion risk is high. "
-            "Pass a different judge_provider or set allow_self_judge=True."
-        )
-    if self_judge:
-        logger.warning(
-            "[iterative] self-judge enabled (writer == judge == %s); "
-            "judge scores are unreliable", writer_id,
-        )
-
-    history: list[RoundResult] = []
-    current = article
-    prior_tells: list[str] = []
-    stopped: Literal["target_reached", "rounds_exhausted", "judge_failed"] = "rounds_exhausted"
-
-    for r in range(1, rounds + 1):
-        # Round 1: standard aggressive polish on `current`.
-        # Round ≥2: same polish, then a targeted refine using prior_tells.
-        try:
-            polished, _after, _before = postprocess_humanize(
-                current,
-                scene=scene,
-                lang=lang,
-                provider=writer_resolved,
-                force_llm=True,  # always rewrite in a loop, ignore "已达发布线" gate
-            )
-        except (LLMError, LLMNotConfiguredError, ValueError) as e:
-            history.append(RoundResult(
-                round=r, polished=current, polished_len=len(current),
-                rule_score=None, ai_score=None, verdict="UNKNOWN",
-                tells=[], error=f"writer error: {e}",
-            ))
-            break
-
-        if prior_tells and r >= 2:
-            synthetic = [
-                Violation(category="judge_tell", rule=f"round{r-1}",
-                          weight=10, count=1, sample=t[:200])
-                for t in prior_tells[:8]
-            ]
-            targeted_prompt = build_humanize_postprocess_prompt(
-                polished, synthetic, scene=scene, lang=lang, aggressive=True,
-            )
-            refined = _writer_call_llm(targeted_prompt, provider=writer_resolved)
-            if refined:
-                polished = refined
-
-        # Local rule score (zh only) — sanity check, not decisive.
-        rule_v: float | None = None
-        if lang == "zh":
-            rule_v = score(polished).total
-
-        # Judge
-        ai_score_v, tells, verdict = _judge_one_round(
-            polished, judge_provider=judge_resolved, lang=lang, profile=profile,
-        )
-        history.append(RoundResult(
-            round=r, polished=polished, polished_len=len(polished),
-            rule_score=rule_v, ai_score=ai_score_v, verdict=verdict, tells=tells,
-        ))
-
-        current = polished
-        prior_tells = tells
-
-        if ai_score_v is None:
-            stopped = "judge_failed"
-            break
-        if ai_score_v <= target_ai_score:
-            stopped = "target_reached"
-            break
-
-    # Pick best round (lowest ai_score; ties broken by highest round number).
-    rated = [h for h in history if h.ai_score is not None and not h.error]
-    if rated:
-        best = min(rated, key=lambda h: (h.ai_score or 999, -h.round))
-        final_text = best.polished
-    elif history:
-        final_text = history[-1].polished
-    else:
-        final_text = article
-
-    return IterativeResult(
-        final_text=final_text,
-        rounds=history,
-        writer_provider=writer_id,
-        judge_provider=judge_id,
+    return _core_iterative_polish(
+        article,
+        profile=profile,
+        lang=lang,
+        rounds=rounds,
         target_ai_score=target_ai_score,
-        stopped_reason=stopped,
-        self_judge=self_judge,
+        scene=scene,
+        writer_provider=writer_provider,
+        judge_provider=judge_provider,
+        allow_self_judge=allow_self_judge,
     )
+
+
+__all__ = [
+    "IterativeResult",
+    "RoundResult",
+    "Verdict",
+    "iterative_polish",
+    "LOOP_JUDGE_PROMPT",
+    "LOOP_JUDGE_PROMPT_EN",
+]

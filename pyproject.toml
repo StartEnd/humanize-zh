@@ -1,6 +1,6 @@
 [project]
 name = "humanize-zh"
-version = "0.1.0a1"
+version = "0.2.0a1"
 description = "Chinese AI text humanization library — detect / polish / judge with rule + ngram + LLM"
 authors = [{ name = "song" }]
 readme = "README.md"
@@ -19,12 +19,12 @@ classifiers = [
     "Topic :: Text Processing :: Linguistic",
 ]
 
-dependencies = []
+dependencies = ["humanize-core>=0.1.0a1"]
 
 [project.optional-dependencies]
-openai = ["openai>=1.0.0"]
-anthropic = ["anthropic>=0.40.0"]
-ui = ["fastapi>=0.115.0", "jinja2>=3.1.0", "uvicorn>=0.30.0", "python-multipart>=0.0.9"]
+openai = ["humanize-core[openai]>=0.1.0a1"]
+anthropic = ["humanize-core[anthropic]>=0.1.0a1"]
+ui = ["humanize-core[ui]>=0.1.0a1"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -36,6 +36,18 @@ all = ["humanize-zh[openai,anthropic,ui]"]
 
 [project.scripts]
 humanize-zh = "humanize_zh.cli.main:main"
+
+# Entry-point discovery: installing humanize-zh auto-registers the
+# ZH profile with humanize-core's language registry without forcing
+# downstream callers to ``import humanize_zh`` first.
+[project.entry-points."humanize_core.languages"]
+zh = "humanize_zh._lang.zh.profile:zh_profile"
+
+# While humanize-core is pre-release (not yet on PyPI), point uv at
+# the sibling working copy. Remove this block once humanize-core ships
+# to TestPyPI and the ``>=0.1.0a1`` spec above can resolve normally.
+[tool.uv.sources]
+humanize-core = { path = "../humanize-core", editable = true }
 
 [project.urls]
 Repository = "https://github.com/song/humanize-zh"

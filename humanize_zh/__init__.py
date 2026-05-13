@@ -52,7 +52,7 @@ from .ngram_check import NgramScore, ngram_score
 from .postprocess import postprocess_humanize
 from .prompt import build_humanize_postprocess_prompt, build_humanize_prompt
 
-__version__ = "0.1.0a1"
+__version__ = "0.2.0a1"
 
 # ── Auto-register the built-in ZH profile on package import ─────────────
 #

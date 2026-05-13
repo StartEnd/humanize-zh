@@ -136,23 +136,11 @@ def _make_profile(code: str = "xx", *, with_ngram: bool = True) -> LanguageProfi
 # ─── Fixtures ─────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def clean_registry():
-    """Drop existing registry state, restore on teardown.
-
-    We can't naively reset_for_tests() at teardown because ``humanize_zh``
-    auto-registers ``zh`` on import (post-Phase-1.11). So we snapshot.
-    """
-    from humanize_zh._core import language_registry as reg
-    with reg._LOCK:
-        snapshot = dict(reg._PROFILES)
-        snapshot_done = reg._DISCOVERY_DONE
-    reset_for_tests()
-    yield
-    reset_for_tests()
-    with reg._LOCK:
-        reg._PROFILES.update(snapshot)
-        reg._DISCOVERY_DONE = snapshot_done
+# NOTE: ``clean_registry`` moved to ``tests/conftest.py`` in P2.8 so it
+# is discovered via pytest's directory-based fixture scanner instead of
+# a cross-module ``from tests.test_protocols import ...``. The latter
+# fails once humanize-core is installed editably because *its* sibling
+# ``tests/`` package shadows ours on ``sys.path``.
 
 
 # ─── Protocol fit (runtime_checkable isinstance) ─────────────────────────
@@ -413,6 +401,11 @@ def test_entry_point_group_constant_is_stable() -> None:
 
 def test_discovery_loads_profile_from_callable_entry_point(clean_registry) -> None:
     """Plugins ship either a LanguageProfile or a zero-arg factory."""
+    # ``clean_registry`` parks discovery=done; opt back in for this test.
+    from humanize_zh._core import language_registry as reg
+    with reg._LOCK:
+        reg._DISCOVERY_DONE = False
+
     profile = _make_profile("xx")
     fake_ep = MagicMock()
     fake_ep.name = "xx"
@@ -430,6 +423,10 @@ def test_discovery_loads_profile_from_callable_entry_point(clean_registry) -> No
 
 def test_discovery_skips_broken_entry_points(clean_registry) -> None:
     """One broken plugin must not crash discovery for other plugins."""
+    from humanize_zh._core import language_registry as reg
+    with reg._LOCK:
+        reg._DISCOVERY_DONE = False
+
     good_profile = _make_profile("xx")
     good_ep = MagicMock()
     good_ep.name = "xx"
@@ -451,6 +448,10 @@ def test_discovery_skips_broken_entry_points(clean_registry) -> None:
 
 def test_discovery_runs_only_once_per_process(clean_registry) -> None:
     """Repeated lookups must not re-trigger entry-point scanning."""
+    from humanize_zh._core import language_registry as reg
+    with reg._LOCK:
+        reg._DISCOVERY_DONE = False
+
     call_count = {"n": 0}
 
     def fake_eps(group: str = ""):
@@ -479,6 +480,10 @@ def test_discovery_publishes_profiles_atomically(clean_registry) -> None:
     """
     import threading
     import time
+
+    from humanize_zh._core import language_registry as reg
+    with reg._LOCK:
+        reg._DISCOVERY_DONE = False
 
     profile = _make_profile("xx")
     discovery_started = threading.Event()
@@ -626,18 +631,19 @@ def test_zh_replacements_loader_failure_returns_empty_tuple(tmp_path, monkeypatc
 
 
 def test_zh_prompt_shim_re_exports_canonical_modules() -> None:
-    """Phase 1.7 split ``humanize_zh.prompt`` into:
+    """``humanize_zh.prompt`` re-exports every name from its canonical home.
 
-    - ``humanize_zh._lang.zh.prompts`` (ZH constants + builder + ZH templates)
-    - ``humanize_zh._core.prompt`` (cross-language dispatcher + EN placeholder)
-
-    The legacy ``humanize_zh.prompt`` module is now a re-export shim. Every
-    public name must be the *same object* on both sides — drift would mean
-    we silently maintain two copies of the rules and they'd diverge.
+    Layout (post-P2.8b):
+    - ``humanize_zh._lang.zh.prompts`` — ZH constants + builder + ZH templates.
+    - ``humanize_core.prompt`` — framework EN placeholder templates.
+    - ``humanize_zh.prompt`` — owns the ZH postprocess dispatcher
+      (:func:`build_humanize_postprocess_prompt`) and re-exports both
+      sources. The dispatcher used to live in ``humanize_zh._core.prompt``;
+      P2.8b moved it here because rule-list injection is plugin-internal.
     """
     from humanize_zh import prompt as shim
-    from humanize_zh._core import prompt as core
     from humanize_zh._lang.zh import prompts as zh
+    from humanize_core import prompt as core
 
     zh_owned = {
         "ASSERTION_TEMPLATE", "CORE_RULES", "HARD_LIMITS", "HARD_NEVER",
@@ -645,19 +651,26 @@ def test_zh_prompt_shim_re_exports_canonical_modules() -> None:
         "SCENES", "SELF_CHECK", "SOUL_INJECTION", "WORDS_BLACKLIST",
         "build_humanize_prompt",
     }
-    core_owned = {"POSTPROCESS_PROMPT_EN", "build_humanize_postprocess_prompt"}
+    core_owned = {"POSTPROCESS_PROMPT_EN", "JUDGE_PROMPT_EN", "LOOP_JUDGE_PROMPT_EN"}
 
     for name in zh_owned:
         assert getattr(shim, name) is getattr(zh, name), f"shim.{name} drifted from ZH canonical"
     for name in core_owned:
         assert getattr(shim, name) is getattr(core, name), f"shim.{name} drifted from core canonical"
+    # The dispatcher now lives on the shim itself, not on either source.
+    assert callable(shim.build_humanize_postprocess_prompt)
 
 
 def test_postprocess_dispatcher_picks_correct_template_per_lang() -> None:
     """Lang dispatch must route ``zh`` / ``en`` to the right template,
     and rely only on the LANG flag (not on detector violations).
+
+    P2.8b moved the dispatcher to :mod:`humanize_zh.prompt` (from
+    ``humanize_zh._core.prompt``). The legacy import path still works
+    via the ``_core`` shim package — see
+    :func:`test_legacy_core_prompt_path_still_resolves_dispatcher`.
     """
-    from humanize_zh._core.prompt import build_humanize_postprocess_prompt
+    from humanize_zh.prompt import build_humanize_postprocess_prompt
 
     zh_out = build_humanize_postprocess_prompt("article", [], lang="zh", scene="analysis")
     en_out = build_humanize_postprocess_prompt("article", [], lang="en")
@@ -665,6 +678,25 @@ def test_postprocess_dispatcher_picks_correct_template_per_lang() -> None:
     assert "De-AI polishing pass" in en_out
     assert "去 AI 味" not in en_out
     assert "De-AI polishing pass" not in zh_out
+
+
+def test_legacy_core_prompt_path_still_resolves_dispatcher() -> None:
+    """The legacy import
+    ``from humanize_zh._core.prompt import build_humanize_postprocess_prompt``
+    used to work pre-P2.8b. After the alias to ``humanize_core.prompt``,
+    the framework module no longer ships the ZH-aware dispatcher, so
+    legacy callers must migrate to ``humanize_zh.prompt``. We assert the
+    new layer is the canonical home.
+    """
+    import humanize_zh._core.prompt as legacy
+    import humanize_core.prompt as canonical
+
+    assert legacy is canonical
+    # Dispatcher must NOT live on the framework module; it's plugin code.
+    assert not hasattr(canonical, "build_humanize_postprocess_prompt")
+    # And it MUST live on humanize_zh.prompt now.
+    from humanize_zh.prompt import build_humanize_postprocess_prompt
+    assert callable(build_humanize_postprocess_prompt)
 
 
 def test_postprocess_imports_load_replacements_from_canonical_module() -> None:
@@ -895,3 +927,22 @@ def test_zh_profile_judge_prompts_relocated_from_judge_module() -> None:
     # Both prompts must contain the placeholder consumers rely on.
     assert "{ARTICLE}" in zh_prompt
     assert "{ARTICLE}" in core_en_prompt
+
+
+def test_zh_format_labels_match_profile() -> None:
+    """Regression for the duplication introduced in P2.8a.
+
+    ``humanize_zh._format`` keeps a private copy of the ZH level labels
+    so that importing it does not pull the heavy ``_lang.zh.profile``
+    module (which would create a circular import — the detector
+    imports ``level_label``, the profile imports the detector). The
+    profile owns the canonical copy on
+    ``LanguageProfile.level_labels``; both tables must stay in sync or
+    CLI / Web will render different strings depending on which entry
+    point the caller used. This test enforces equality.
+    """
+    from humanize_zh._format import _ZH_LEVEL_LABELS
+    from humanize_zh._lang.zh.profile import ZH_LEVEL_LABELS, zh_profile
+
+    assert _ZH_LEVEL_LABELS == ZH_LEVEL_LABELS
+    assert _ZH_LEVEL_LABELS == zh_profile.level_labels

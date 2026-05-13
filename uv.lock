@@ -327,28 +327,13 @@ wheels = [
 ]
 
 [[package]]
-name = "humanize-zh"
+name = "humanize-core"
 version = "0.1.0a1"
-source = { editable = "." }
+source = { editable = "../humanize-core" }
 
 [package.optional-dependencies]
-all = [
-    { name = "anthropic" },
-    { name = "fastapi" },
-    { name = "jinja2" },
-    { name = "openai" },
-    { name = "python-multipart" },
-    { name = "uvicorn" },
-]
 anthropic = [
     { name = "anthropic" },
-]
-dev = [
-    { name = "httpx" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
 ]
 openai = [
     { name = "openai" },
@@ -365,7 +350,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40.0" },
     { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.115.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "humanize-zh", extras = ["openai", "anthropic", "ui"], marker = "extra == 'all'" },
+    { name = "humanize-core", extras = ["openai", "anthropic", "ui"], marker = "extra == 'all'" },
     { name = "jinja2", marker = "extra == 'ui'", specifier = ">=3.1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0.0" },
@@ -374,6 +359,50 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'ui'", specifier = ">=0.0.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.0" },
     { name = "uvicorn", marker = "extra == 'ui'", specifier = ">=0.30.0" },
+]
+provides-extras = ["openai", "anthropic", "ui", "dev", "all"]
+
+[[package]]
+name = "humanize-zh"
+version = "0.2.0a1"
+source = { editable = "." }
+dependencies = [
+    { name = "humanize-core" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "humanize-core", extra = ["anthropic", "openai", "ui"] },
+]
+anthropic = [
+    { name = "humanize-core", extra = ["anthropic"] },
+]
+dev = [
+    { name = "httpx" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+openai = [
+    { name = "humanize-core", extra = ["openai"] },
+]
+ui = [
+    { name = "humanize-core", extra = ["ui"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "humanize-core", editable = "../humanize-core" },
+    { name = "humanize-core", extras = ["anthropic"], marker = "extra == 'anthropic'", editable = "../humanize-core" },
+    { name = "humanize-core", extras = ["openai"], marker = "extra == 'openai'", editable = "../humanize-core" },
+    { name = "humanize-core", extras = ["ui"], marker = "extra == 'ui'", editable = "../humanize-core" },
+    { name = "humanize-zh", extras = ["openai", "anthropic", "ui"], marker = "extra == 'all'" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.0" },
 ]
 provides-extras = ["openai", "anthropic", "ui", "dev", "all"]
 
