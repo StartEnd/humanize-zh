@@ -50,8 +50,8 @@ zh = "humanize_zh._lang.zh.profile:zh_profile"
 humanize-core = { path = "../humanize-core", editable = true }
 
 [project.urls]
-Repository = "https://github.com/song/humanize-zh"
-Issues = "https://github.com/song/humanize-zh/issues"
+Repository = "https://github.com/StartEnd/humanize-zh"
+Issues = "https://github.com/StartEnd/humanize-zh/issues"
 
 [build-system]
 requires = ["hatchling"]
